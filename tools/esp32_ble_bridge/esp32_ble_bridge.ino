@@ -10,8 +10,8 @@
  *   - Mayhem v2 ESP32-CAM ($95) — auto-connected, same pins as WROOM-32D
  *
  * Wiring (XIAO ESP32C3 default):
- *   Flipper GPIO C1 (pin 13, TX) ──→ ESP32 RX (GPIO20)
- *   Flipper GPIO C0 (pin 14, RX) ──→ ESP32 TX (GPIO21)
+ *   Flipper GPIO C1 (pin 15, TX) ──→ ESP32 RX (GPIO20)
+ *   Flipper GPIO C0 (pin 16, RX) ──→ ESP32 TX (GPIO21)
  *   Flipper GND     (pin 18)     ──→ ESP32 GND
  *   Flipper 3.3V    (pin 9)      ──→ ESP32 3.3V (⚠ NOT 5V!)
  *

@@ -170,7 +170,7 @@ static int32_t _worker(void* ctx) {
 
     char line[ESL_LINE_MAX];
     while(ble->worker_running && !ble->abort_requested) {
-        uint8_t len = _read_line(ble, line, sizeof(line), 30000);
+        uint8_t len = _read_line(ble, line, sizeof(line), 12000);
 
         if(len == 0) {
             // Timeout

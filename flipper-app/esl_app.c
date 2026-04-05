@@ -118,6 +118,10 @@ static EslApp* esl_app_alloc(void) {
     app->loading    = loading_alloc();
     app->widget     = widget_alloc();
     app->scan_view  = view_alloc();
+    // Allocate a minimal model so view_commit_model (used to trigger redraws) works.
+    // The draw callback reads state from s_scan_ctx directly; this 1-byte model is
+    // only needed as the handle for with_view_model(..., true) in the event handler.
+    view_allocate_model(app->scan_view, ViewModelTypeLocking, 1);
 
     // Register views with the dispatcher
     view_dispatcher_add_view(app->view_dispatcher, EslViewSubmenu,

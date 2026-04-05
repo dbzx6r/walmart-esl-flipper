@@ -222,9 +222,11 @@ bool esl_scene_scan_list_on_event(void* ctx, SceneManagerEvent event) {
             return true;
         }
         if(event.event == EslCustomEventScanDone || event.event == EslCustomEventScanRedraw) {
-            // The GUI redraws the custom view automatically; no need to switch to it again.
-            // Calling view_dispatcher_switch_to_view while already on this view is a no-op
-            // at best, and can cause subtle issues inside the event pipeline.
+            // Trigger a redraw of the scan view. s_scan_ctx.scanning and app->scan_count
+            // were already updated before this event was queued. The 1-byte dummy model
+            // is only here to satisfy with_view_model / view_commit_model — the draw
+            // callback reads state from s_scan_ctx and app directly.
+            with_view_model(app->scan_view, uint8_t* model, { (void)(*model); }, true);
             return true;
         }
     }
