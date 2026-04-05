@@ -1,0 +1,6 @@
+bleak>=0.21.0
+Pillow>=10.0.0
+click>=8.1.0
+
+# Optional: only required for the `serial` command (Flipper USB bridge mode)
+pyserial>=3.5

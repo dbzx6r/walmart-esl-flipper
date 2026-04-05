@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+.pytest_cache/
+
+# Pillow / image tools
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+# (keep .bin output files out of repo too)
+*.bin
+
+# Flipper Zero build artifacts
+flipper-app/build/
+flipper-app/dist/
+*.fap
+*.elf
+*.map
+*.lst
+
+# uFBT
+.ufbt/
+.vscode/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Secrets / credentials — never commit these
+*.key
+*.pem
+*.env
+.env

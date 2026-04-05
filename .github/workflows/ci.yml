@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  python-lint:
+    name: Python syntax & import check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bleak Pillow click pyserial
+
+      - name: Check Python syntax (py_compile)
+        run: |
+          python -m py_compile companion/esl_companion.py
+          python -m py_compile companion/image_converter.py
+          python -m py_compile tools/esl_image.py
+          echo "All Python files parsed successfully."
+
+      - name: Run image converter self-test
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "companion")
+          from image_converter import DisplayModel, buffer_size, render_price_tag
+
+          # Verify buffer sizes
+          assert buffer_size(DisplayModel.BW213) == 4000, "BW213 buffer size mismatch"
+          assert buffer_size(DisplayModel.BWR154) == 5000, "BWR154 buffer size mismatch"
+          assert buffer_size(DisplayModel.BW213ICE) == 2756, "BW213ICE buffer size mismatch"
+
+          # Verify price tag renders to correct buffer size
+          buf = render_price_tag("$12.99", label="Great Value", model=DisplayModel.BW213)
+          assert len(buf) == 4000, f"render_price_tag length {len(buf)}, expected 4000"
+
+          # Verify all-white buffer starts with 0xFF bytes
+          from image_converter import image_to_esl
+          from PIL import Image
+          white_img = Image.new("RGB", (250, 122), (255, 255, 255))
+          white_buf = image_to_esl(white_img, model=DisplayModel.BW213, dither=False)
+          assert all(b == 0xFF for b in white_buf), "White image should produce all-0xFF buffer"
+
+          # Verify all-black buffer: full bytes should be 0x00, padding bits stay 0xFF
+          # For 250×122: 16 bytes/col, last byte has y=122..127 as padding (stays 0xFF)
+          # 250 cols × 15 full bytes = 3750 bytes of pure black (0x00)
+          black_img = Image.new("RGB", (250, 122), (0, 0, 0))
+          black_buf = image_to_esl(black_img, model=DisplayModel.BW213, dither=False)
+          col_bytes = 16  # ceil(122/8) = 16
+          full_black = sum(1 for i, b in enumerate(black_buf) if (i % col_bytes != col_bytes-1) and b == 0x00)
+          assert full_black == 250 * 15, f"Expected 3750 fully-black bytes, got {full_black}"
+
+          print("All image converter tests passed.")
+          EOF
+
+  flipper-build-check:
+    name: Flipper FAP manifest check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify application.fam is valid Python syntax
+        run: |
+          python -m py_compile flipper-app/application.fam
+          echo "application.fam parsed successfully."
+
+      - name: Check all C source files exist
+        run: |
+          for f in \
+            flipper-app/esl_app.c \
+            flipper-app/esl_app.h \
+            flipper-app/esl_ble.c \
+            flipper-app/esl_ble.h \
+            flipper-app/esl_protocol.c \
+            flipper-app/esl_protocol.h \
+            flipper-app/esl_ui.c \
+            flipper-app/esl_ui.h \
+            flipper-app/application.fam; do
+            test -f "$f" && echo "  ✓ $f" || (echo "  ✗ MISSING: $f" && exit 1)
+          done
+          echo "All FAP source files present."
