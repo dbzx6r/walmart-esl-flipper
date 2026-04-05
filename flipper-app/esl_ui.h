@@ -79,12 +79,6 @@ typedef struct EslApp {
     char                    price_buf[ESL_PRICE_BUF_LEN];
     char                    label_buf[ESL_LABEL_BUF_LEN];
 
-    // Image buffer (reused across operations)
-    EslImageBuffer          img_buf;
-
-    // Current display model (auto-detected or user-selected)
-    EslDisplayModel         display_model;
-
     // Upload worker thread (kept alive until join)
     FuriThread*             upload_thread;
 

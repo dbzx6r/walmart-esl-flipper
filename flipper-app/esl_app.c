@@ -97,9 +97,6 @@ static EslApp* esl_app_alloc(void) {
     furi_assert(app);
     memset(app, 0, sizeof(EslApp));
 
-    // Default display model — most common Walmart tag
-    app->display_model = EslModelBW213;
-
     // Allocate Flipper services
     app->gui           = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);

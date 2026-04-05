@@ -22,10 +22,10 @@ This folder contains the Arduino sketch that turns any ESP32 module into the BLE
 > Mayhem v2 users: no wiring required — it plugs directly into the Flipper GPIO header.
 
 ```
-Flipper GPIO pin 13 (C1 / TX) ──→  ESP32 RX
-Flipper GPIO pin 14 (C0 / RX) ──→  ESP32 TX
-Flipper GPIO pin 18 (GND)     ──→  ESP32 GND
-Flipper GPIO pin  9 (3.3V)    ──→  ESP32 3.3V  ⚠ NOT 5V!
+Flipper GPIO pin 15 (C1 / LPUART TX) ──→  ESP32 RX
+Flipper GPIO pin 16 (C0 / LPUART RX) ──→  ESP32 TX
+Flipper GPIO pin 18 (GND)            ──→  ESP32 GND
+Flipper GPIO pin  9 (3.3V)           ──→  ESP32 3.3V  ⚠ NOT 5V!
 ```
 
 | Module | ESP32 RX pin | ESP32 TX pin |

@@ -92,9 +92,13 @@ static ScanViewCtx s_scan_ctx;
 // Maximum devices visible at once in the scan list
 #define SCAN_VISIBLE_ROWS 5
 
-static void _scan_view_draw(Canvas* canvas, void* ctx) {
-    EslApp* app     = ((ScanViewCtx*)ctx)->app;
-    bool scanning   = ((ScanViewCtx*)ctx)->scanning;
+static void _scan_view_draw(Canvas* canvas, void* model) {
+    UNUSED(model);
+    // ViewDrawCallback receives view->model (not view->context).
+    // We never allocate a model, so `model` is NULL. Use the static global instead.
+    EslApp* app   = s_scan_ctx.app;
+    bool scanning = s_scan_ctx.scanning;
+    if(!app) return;
 
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
@@ -218,7 +222,9 @@ bool esl_scene_scan_list_on_event(void* ctx, SceneManagerEvent event) {
             return true;
         }
         if(event.event == EslCustomEventScanDone || event.event == EslCustomEventScanRedraw) {
-            view_dispatcher_switch_to_view(app->view_dispatcher, EslViewCustomScan);
+            // The GUI redraws the custom view automatically; no need to switch to it again.
+            // Calling view_dispatcher_switch_to_view while already on this view is a no-op
+            // at best, and can cause subtle issues inside the event pipeline.
             return true;
         }
     }
@@ -235,8 +241,6 @@ void esl_scene_scan_list_on_exit(void* ctx) {
 typedef enum {
     EslDeviceMenuPrice = 0,
     EslDeviceMenuClear,
-    EslDeviceMenuModelBW,
-    EslDeviceMenuModelBWR,
 } EslDeviceMenuIdx;
 
 static void _device_submenu_cb(void* ctx, uint32_t idx) {
@@ -252,8 +256,6 @@ void esl_scene_device_menu_on_enter(void* ctx) {
                                      : app->selected_device.mac);
     submenu_add_item(app->submenu, "Set Price / Text",  EslDeviceMenuPrice, _device_submenu_cb, app);
     submenu_add_item(app->submenu, "Clear Display",     EslDeviceMenuClear, _device_submenu_cb, app);
-    submenu_add_item(app->submenu, "Model: BW 2.13\"",  EslDeviceMenuModelBW,  _device_submenu_cb, app);
-    submenu_add_item(app->submenu, "Model: BWR 2.13\"", EslDeviceMenuModelBWR, _device_submenu_cb, app);
     view_dispatcher_switch_to_view(app->view_dispatcher, EslViewSubmenu);
 
     // Store MAC for UART bridge
@@ -271,12 +273,6 @@ bool esl_scene_device_menu_on_event(void* ctx, SceneManagerEvent event) {
         case EslDeviceMenuClear:
             app->price_buf[0] = '\0';  // ensure _upload_worker takes the clear path
             scene_manager_next_scene(app->scene_manager, EslSceneUploading);
-            return true;
-        case EslDeviceMenuModelBW:
-            app->display_model = EslModelBW213;
-            return true;
-        case EslDeviceMenuModelBWR:
-            app->display_model = EslModelBWR213;
             return true;
         }
     }
