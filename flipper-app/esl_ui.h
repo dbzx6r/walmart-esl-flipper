@@ -22,7 +22,8 @@
 typedef enum {
     EslSceneMain,           // Top-level menu
     EslSceneScanList,       // BLE scan results list
-    EslSceneDeviceMenu,     // Per-device action menu
+    EslSceneDeviceMenu,     // Per-device action menu (ATC)
+    EslSceneVusionMenu,     // Per-device action menu (Vusion)
     EslScenePriceEntry,     // Text input for price string
     EslSceneLabelEntry,     // Text input for optional label
     EslSceneUploading,      // Progress screen during upload
@@ -39,7 +40,7 @@ typedef enum {
     EslViewPopup,
     EslViewLoading,
     EslViewWidget,
-    EslViewCustomScan,     // Custom view for scan list with RSSI
+    EslViewCustomScan,     // Custom view for scan list with RSSI + cursor
     EslViewCount,
 } EslView;
 
@@ -63,12 +64,13 @@ typedef struct EslApp {
     Widget*                 widget;
     View*                   scan_view;
 
-    // BLE layer
+    // BLE / UART bridge layer
     EslBle*                 ble;
 
     // Scan results
     EslDevice               scan_results[ESL_MAX_DEVICES];
     uint8_t                 scan_count;
+    uint8_t                 scan_cursor;    // highlighted device index
 
     // Selected device
     EslDevice               selected_device;
@@ -93,6 +95,9 @@ typedef struct EslApp {
     char                    result_msg[64];
     bool                    result_ok;
 
+    // Vusion image cycling
+    uint8_t                 vusion_image_idx;
+
 } EslApp;
 
 // ── Scene handlers ────────────────────────────────────────────────────────────
@@ -107,10 +112,15 @@ void esl_scene_scan_list_on_enter(void* ctx);
 bool esl_scene_scan_list_on_event(void* ctx, SceneManagerEvent event);
 void esl_scene_scan_list_on_exit(void* ctx);
 
-// Device menu
+// ATC device menu
 void esl_scene_device_menu_on_enter(void* ctx);
 bool esl_scene_device_menu_on_event(void* ctx, SceneManagerEvent event);
 void esl_scene_device_menu_on_exit(void* ctx);
+
+// Vusion device menu
+void esl_scene_vusion_menu_on_enter(void* ctx);
+bool esl_scene_vusion_menu_on_event(void* ctx, SceneManagerEvent event);
+void esl_scene_vusion_menu_on_exit(void* ctx);
 
 // Price entry
 void esl_scene_price_entry_on_enter(void* ctx);

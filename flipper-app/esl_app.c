@@ -33,38 +33,47 @@
 
 // ── Scene manager handlers table ──────────────────────────────────────────────
 
+static const AppSceneOnEnterCallback ESL_SCENE_ON_ENTER[] = {
+    [EslSceneMain]        = esl_scene_main_on_enter,
+    [EslSceneScanList]    = esl_scene_scan_list_on_enter,
+    [EslSceneDeviceMenu]  = esl_scene_device_menu_on_enter,
+    [EslSceneVusionMenu]  = esl_scene_vusion_menu_on_enter,
+    [EslScenePriceEntry]  = esl_scene_price_entry_on_enter,
+    [EslSceneLabelEntry]  = esl_scene_label_entry_on_enter,
+    [EslSceneUploading]   = esl_scene_uploading_on_enter,
+    [EslSceneResult]      = esl_scene_result_on_enter,
+    [EslSceneAbout]       = esl_scene_about_on_enter,
+};
+
+static const AppSceneOnEventCallback ESL_SCENE_ON_EVENT[] = {
+    [EslSceneMain]        = esl_scene_main_on_event,
+    [EslSceneScanList]    = esl_scene_scan_list_on_event,
+    [EslSceneDeviceMenu]  = esl_scene_device_menu_on_event,
+    [EslSceneVusionMenu]  = esl_scene_vusion_menu_on_event,
+    [EslScenePriceEntry]  = esl_scene_price_entry_on_event,
+    [EslSceneLabelEntry]  = esl_scene_label_entry_on_event,
+    [EslSceneUploading]   = esl_scene_uploading_on_event,
+    [EslSceneResult]      = esl_scene_result_on_event,
+    [EslSceneAbout]       = esl_scene_about_on_event,
+};
+
+static const AppSceneOnExitCallback ESL_SCENE_ON_EXIT[] = {
+    [EslSceneMain]        = esl_scene_main_on_exit,
+    [EslSceneScanList]    = esl_scene_scan_list_on_exit,
+    [EslSceneDeviceMenu]  = esl_scene_device_menu_on_exit,
+    [EslSceneVusionMenu]  = esl_scene_vusion_menu_on_exit,
+    [EslScenePriceEntry]  = esl_scene_price_entry_on_exit,
+    [EslSceneLabelEntry]  = esl_scene_label_entry_on_exit,
+    [EslSceneUploading]   = esl_scene_uploading_on_exit,
+    [EslSceneResult]      = esl_scene_result_on_exit,
+    [EslSceneAbout]       = esl_scene_about_on_exit,
+};
+
 static const SceneManagerHandlers ESL_SCENE_HANDLERS = {
-    .on_enter_handlers = {
-        [EslSceneMain]        = esl_scene_main_on_enter,
-        [EslSceneScanList]    = esl_scene_scan_list_on_enter,
-        [EslSceneDeviceMenu]  = esl_scene_device_menu_on_enter,
-        [EslScenePriceEntry]  = esl_scene_price_entry_on_enter,
-        [EslSceneLabelEntry]  = esl_scene_label_entry_on_enter,
-        [EslSceneUploading]   = esl_scene_uploading_on_enter,
-        [EslSceneResult]      = esl_scene_result_on_enter,
-        [EslSceneAbout]       = esl_scene_about_on_enter,
-    },
-    .on_event_handlers = {
-        [EslSceneMain]        = esl_scene_main_on_event,
-        [EslSceneScanList]    = esl_scene_scan_list_on_event,
-        [EslSceneDeviceMenu]  = esl_scene_device_menu_on_event,
-        [EslScenePriceEntry]  = esl_scene_price_entry_on_event,
-        [EslSceneLabelEntry]  = esl_scene_label_entry_on_event,
-        [EslSceneUploading]   = esl_scene_uploading_on_event,
-        [EslSceneResult]      = esl_scene_result_on_event,
-        [EslSceneAbout]       = esl_scene_about_on_event,
-    },
-    .on_exit_handlers = {
-        [EslSceneMain]        = esl_scene_main_on_exit,
-        [EslSceneScanList]    = esl_scene_scan_list_on_exit,
-        [EslSceneDeviceMenu]  = esl_scene_device_menu_on_exit,
-        [EslScenePriceEntry]  = esl_scene_price_entry_on_exit,
-        [EslSceneLabelEntry]  = esl_scene_label_entry_on_exit,
-        [EslSceneUploading]   = esl_scene_uploading_on_exit,
-        [EslSceneResult]      = esl_scene_result_on_exit,
-        [EslSceneAbout]       = esl_scene_about_on_exit,
-    },
-    .scene_num = EslSceneCount,
+    .on_enter_handlers = ESL_SCENE_ON_ENTER,
+    .on_event_handlers = ESL_SCENE_ON_EVENT,
+    .on_exit_handlers  = ESL_SCENE_ON_EXIT,
+    .scene_num         = EslSceneCount,
 };
 
 // ── View dispatcher back callback ─────────────────────────────────────────────
@@ -100,7 +109,6 @@ static EslApp* esl_app_alloc(void) {
 
     // Allocate view dispatcher
     app->view_dispatcher = view_dispatcher_alloc();
-    view_dispatcher_enable_queue(app->view_dispatcher);
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_navigation_event_callback(app->view_dispatcher, _back_event_cb);
     view_dispatcher_set_custom_event_callback(app->view_dispatcher, _custom_event_cb);

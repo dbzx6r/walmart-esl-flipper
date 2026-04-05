@@ -14,6 +14,6 @@ App(
     fap_version=(1, 0),
     fap_description="Control Hanshow Stellar e-ink price tags over BLE.",
     fap_author="ESL Tool Project",
-    fap_weburl="https://github.com/YOUR_USERNAME/walmart-esl-flipper",
+    fap_weburl="https://github.com/dbzx6r/walmart-esl-flipper",
     fap_icon="images/esl_icon.png",
 )

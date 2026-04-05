@@ -1,121 +1,311 @@
+/**
+ * ESL BLE layer — implemented as a UART serial bridge to an ESP32 module.
+ *
+ * Uses the Flipper's LPUART (GPIO C1=TX / C0=RX) at 115200 baud to
+ * communicate with an external ESP32 running the esp32_ble_bridge firmware.
+ * All BLE Central operations (scanning, connecting, GATT writes, bonding)
+ * are handled by the ESP32; this module is responsible for the serial
+ * framing and callback dispatch.
+ *
+ * See esl_ble.h for the full protocol specification.
+ */
+
 #include "esl_ble.h"
 
 #include <furi.h>
 #include <furi_hal.h>
-#include <furi_hal_bt.h>
-#include <bt/bt_service/bt.h>
+#include <furi_hal_serial.h>
+#include <furi_hal_serial_control.h>
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-// ── BLE UUID definitions ──────────────────────────────────────────────────────
-//
-// ATC_TLSR_Paper service:  13187B10-EBA9-A3BA-044E-83D3217D9A38
-// ATC_TLSR_Paper char:     4B646063-6264-F3A7-8941-E65356EA82FE
-//
-// BT SIG ESL Service:      0000184D-0000-1000-8000-00805F9B34FB  (Vusion HRD3-series)
-//
-// UUIDs are stored in little-endian byte order (LSB first) as required by the BLE stack.
+// ── Configuration ─────────────────────────────────────────────────────────────
 
-static const uint8_t EPD_SERVICE_UUID[16] = {
-    0x38, 0x9a, 0x7d, 0x21, 0xd3, 0x83, 0x4e, 0x04,
-    0xba, 0xa3, 0xa9, 0xeb, 0x10, 0x7b, 0x18, 0x13
-};
-
-static const uint8_t EPD_CHAR_UUID[16] = {
-    0xfe, 0x82, 0xea, 0x56, 0x53, 0xe6, 0x41, 0x89,
-    0xa7, 0xf3, 0x64, 0x62, 0x63, 0x60, 0x64, 0x4b
-};
-
-// BT SIG ESL Service UUID (little-endian): 0000184D-0000-1000-8000-00805F9B34FB
-static const uint8_t ESL_SIG_SERVICE_UUID[16] = {
-    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
-    0x00, 0x10, 0x00, 0x00, 0x4d, 0x18, 0x00, 0x00
-};
-
-// ESL BLE device name prefix (ATC_TLSR_Paper firmware)
-#define ESL_BLE_PREFIX "ESL_"
-#define ESL_BLE_PREFIX_LEN 4
-
-// Device type identifiers
-#define ESL_TYPE_ATC    "ATC"    // Hanshow Stellar + ATC_TLSR_Paper
-#define ESL_TYPE_VUSION "VUSION" // SES-imagotag HRD3 (BT SIG ESL Service 0x184D)
-
-// Scan timeout default
-#define ESL_SCAN_TIMEOUT_MS 10000
-
-// Max BLE packet size (ATT MTU - overhead)
-#define ESL_WRITE_MTU 239
-
-// Time to wait after display refresh (ms) — e-ink needs this
-#define ESL_DISPLAY_WAIT_MS 4000
+#define ESL_UART_BAUD        115200
+#define ESL_UART_ID          FuriHalSerialIdLpuart   // GPIO C1=TX / C0=RX
+#define ESL_RX_BUF_SIZE      256
+#define ESL_LINE_MAX         128
+#define ESL_STREAM_SIZE      512
+#define ESL_WORKER_STACK     2048
 
 // ── Internal state ────────────────────────────────────────────────────────────
 
 struct EslBle {
-    EslBleState         state;
-    EslDevice           devices[ESL_MAX_DEVICES];
-    uint8_t             device_count;
-    char                connected_mac[ESL_MAC_STR_LEN];
+    EslBleState  state;
 
-    // Active operation callbacks
+    // UART handle
+    FuriHalSerialHandle* serial;
+
+    // Thread-safe ring buffer: ISR → worker
+    FuriStreamBuffer* rx_stream;
+
+    // Worker thread processes serial lines
+    FuriThread*  worker;
+    bool         worker_running;
+
+    // Pending operation parameters
+    char         pending_cmd[ESL_LINE_MAX];   // full command string to send
+
+    // Connected device MAC + type
+    char         connected_mac[ESL_MAC_STR_LEN];
+    EslTagType   connected_type;
+
+    // Scan state
+    EslDevice    devices[ESL_MAX_DEVICES];
+    uint8_t      device_count;
+    FuriMutex*   devices_mutex;
+
+    // Callbacks
     EslBleScanCallback     on_scan;
     EslBleProgressCallback on_progress;
     EslBleDoneCallback     on_done;
     void*                  cb_ctx;
 
-    // Worker thread
-    FuriThread*         worker;
-    FuriMutex*          mutex;
-    bool                worker_running;
-
-    // Upload state
-    const EslImageBuffer* upload_img;
+    // Signal worker to abort current operation
+    bool         abort_requested;
 };
 
-// ── Worker thread messages ────────────────────────────────────────────────────
+// ── UART receive ISR callback ─────────────────────────────────────────────────
 
-typedef enum {
-    EslWorkerMsgScan,
-    EslWorkerMsgConnect,
-    EslWorkerMsgUpload,
-    EslWorkerMsgCommand,
-    EslWorkerMsgStop,
-} EslWorkerMsgType;
+static void _uart_rx_cb(
+    FuriHalSerialHandle* handle,
+    FuriHalSerialRxEvent event,
+    void* ctx)
+{
+    EslBle* ble = (EslBle*)ctx;
+    if(event & FuriHalSerialRxEventData) {
+        while(furi_hal_serial_async_rx_available(handle)) {
+            uint8_t byte = furi_hal_serial_async_rx(handle);
+            furi_stream_buffer_send(ble->rx_stream, &byte, 1, 0);
+        }
+    }
+}
 
-typedef struct {
-    EslWorkerMsgType type;
-    char             mac[ESL_MAC_STR_LEN];
-    uint8_t          cmd_buf[ESL_WRITE_MTU + 1];
-    uint8_t          cmd_len;
-    uint32_t         scan_timeout_ms;
-} EslWorkerMsg;
+// ── UART transmit helper ──────────────────────────────────────────────────────
 
-// ── Allocation ────────────────────────────────────────────────────────────────
+static void _uart_send(EslBle* ble, const char* str) {
+    furi_hal_serial_tx(ble->serial, (const uint8_t*)str, strlen(str));
+    furi_hal_serial_tx_wait_complete(ble->serial);
+}
+
+// ── Line reader (blocking, with timeout) ─────────────────────────────────────
+//
+// Returns number of bytes in line (not counting NUL terminator), or 0 on timeout.
+
+static uint8_t _read_line(EslBle* ble, char* out, uint8_t max_len, uint32_t timeout_ms) {
+    uint8_t pos = 0;
+    uint32_t deadline = furi_get_tick() + furi_ms_to_ticks(timeout_ms);
+
+    while(furi_get_tick() < deadline && pos < max_len - 1) {
+        if(ble->abort_requested) break;
+
+        uint8_t byte = 0;
+        size_t got = furi_stream_buffer_receive(ble->rx_stream, &byte, 1, 5);
+        if(got == 0) continue;
+
+        if(byte == '\r') continue;  // skip CR
+        if(byte == '\n') {
+            out[pos] = '\0';
+            return pos;
+        }
+        out[pos++] = (char)byte;
+    }
+    out[pos] = '\0';
+    return pos;
+}
+
+// ── Line parser helpers ───────────────────────────────────────────────────────
+
+// Parse "DEVICE name mac rssi ATC|VUSION" into an EslDevice
+static bool _parse_device_line(const char* line, EslDevice* dev) {
+    // Format: DEVICE <name> <mac> <rssi> <type>
+    // name and mac cannot contain spaces; rssi is negative integer
+    char name[ESL_DEVICE_NAME_LEN] = {0};
+    char mac[ESL_MAC_STR_LEN]      = {0};
+    int  rssi = 0;
+    char type[16]                  = {0};
+
+    int parsed = sscanf(line + 7, "%27s %17s %d %15s", name, mac, &rssi, type);
+    if(parsed < 4) return false;
+
+    strncpy(dev->name, name, ESL_DEVICE_NAME_LEN - 1);
+    strncpy(dev->mac,  mac,  ESL_MAC_STR_LEN - 1);
+    dev->rssi  = (int8_t)rssi;
+    dev->valid = true;
+
+    if(strncmp(type, "VUSION", 6) == 0) {
+        dev->tag_type = EslTagTypeVusion;
+    } else if(strncmp(type, "ATC", 3) == 0) {
+        dev->tag_type = EslTagTypeATC;
+    } else {
+        dev->tag_type = EslTagTypeUnknown;
+    }
+    return true;
+}
+
+// ── Operation worker ──────────────────────────────────────────────────────────
+//
+// Runs on a FuriThread.  Sends the pending command, then reads lines until
+// DONE, OK, or ERROR is received.
+
+static int32_t _worker(void* ctx) {
+    EslBle* ble = (EslBle*)ctx;
+
+    // Drain any stale bytes in the stream before sending the command
+    {
+        uint8_t discard;
+        while(furi_stream_buffer_receive(ble->rx_stream, &discard, 1, 0) > 0) {}
+    }
+
+    // Send the command
+    _uart_send(ble, ble->pending_cmd);
+
+    // Determine if this is a SCAN (expects DEVICE lines + DONE)
+    bool is_scan = (strncmp(ble->pending_cmd, "SCAN", 4) == 0);
+
+    char line[ESL_LINE_MAX];
+    while(ble->worker_running && !ble->abort_requested) {
+        uint8_t len = _read_line(ble, line, sizeof(line), 30000);
+
+        if(len == 0) {
+            // Timeout
+            if(ble->on_done) {
+                ble->on_done(false, "ESP32 timeout — check wiring and firmware", ble->cb_ctx);
+            }
+            break;
+        }
+
+        if(strncmp(line, "DEVICE ", 7) == 0 && is_scan) {
+            EslDevice dev;
+            memset(&dev, 0, sizeof(dev));
+            if(_parse_device_line(line, &dev)) {
+                furi_mutex_acquire(ble->devices_mutex, FuriWaitForever);
+                // Update existing or add new
+                bool found = false;
+                for(uint8_t i = 0; i < ble->device_count; i++) {
+                    if(strncmp(ble->devices[i].mac, dev.mac, ESL_MAC_STR_LEN) == 0) {
+                        ble->devices[i].rssi = dev.rssi;
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found && ble->device_count < ESL_MAX_DEVICES) {
+                    ble->devices[ble->device_count++] = dev;
+                }
+                uint8_t cnt = ble->device_count;
+                // Make a local copy for callback (mutex released before calling)
+                EslDevice snapshot[ESL_MAX_DEVICES];
+                for(uint8_t i = 0; i < cnt; i++) snapshot[i] = ble->devices[i];
+                furi_mutex_release(ble->devices_mutex);
+
+                if(ble->on_scan) {
+                    ble->on_scan(snapshot, cnt, ble->cb_ctx);
+                }
+            }
+            continue;
+        }
+
+        if(strncmp(line, "PROGRESS ", 9) == 0) {
+            if(ble->on_progress) {
+                uint8_t pct = (uint8_t)atoi(line + 9);
+                ble->on_progress(pct, ble->cb_ctx);
+            }
+            continue;
+        }
+
+        if(strncmp(line, "DONE", 4) == 0) {
+            ble->state = EslBleStateIdle;
+            if(ble->on_done) {
+                ble->on_done(true, is_scan ? "Scan complete" : "Done", ble->cb_ctx);
+            }
+            break;
+        }
+
+        if(strncmp(line, "OK ", 3) == 0 || strncmp(line, "OK\n", 3) == 0 ||
+           strcmp(line, "OK") == 0) {
+            ble->state = EslBleStateIdle;
+            const char* msg = (len > 3) ? line + 3 : "Done";
+            if(ble->on_done) {
+                ble->on_done(true, msg, ble->cb_ctx);
+            }
+            break;
+        }
+
+        if(strncmp(line, "ERROR ", 6) == 0) {
+            ble->state = EslBleStateError;
+            if(ble->on_done) {
+                ble->on_done(false, line + 6, ble->cb_ctx);
+            }
+            break;
+        }
+        // Ignore unrecognised lines
+    }
+
+    ble->worker_running = false;
+    return 0;
+}
+
+// ── Start worker helper ───────────────────────────────────────────────────────
+
+static void _start_worker(EslBle* ble) {
+    // Join and free any previous worker
+    if(ble->worker) {
+        furi_thread_join(ble->worker);
+        furi_thread_free(ble->worker);
+        ble->worker = NULL;
+    }
+    ble->abort_requested = false;
+    ble->worker_running  = true;
+    ble->worker = furi_thread_alloc_ex("esl_bridge", ESL_WORKER_STACK, _worker, ble);
+    furi_thread_set_priority(ble->worker, FuriThreadPriorityNormal);
+    furi_thread_start(ble->worker);
+}
+
+// ── Allocation / free ─────────────────────────────────────────────────────────
 
 EslBle* esl_ble_alloc(void) {
     EslBle* ble = malloc(sizeof(EslBle));
     furi_assert(ble);
     memset(ble, 0, sizeof(EslBle));
     ble->state = EslBleStateIdle;
-    ble->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    ble->devices_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    ble->rx_stream = furi_stream_buffer_alloc(ESL_STREAM_SIZE, 1);
+
+    // Acquire and configure the LPUART
+    ble->serial = furi_hal_serial_control_acquire(ESL_UART_ID);
+    if(ble->serial) {
+        furi_hal_serial_init(ble->serial, ESL_UART_BAUD);
+        furi_hal_serial_async_rx_start(ble->serial, _uart_rx_cb, ble, false);
+    }
+
     return ble;
 }
 
 void esl_ble_free(EslBle* ble) {
     furi_assert(ble);
-    if(ble->state == EslBleStateConnected) {
-        esl_ble_disconnect(ble);
-    }
+
+    ble->abort_requested = true;
     if(ble->worker) {
-        ble->worker_running = false;
         furi_thread_join(ble->worker);
         furi_thread_free(ble->worker);
         ble->worker = NULL;
     }
-    furi_mutex_free(ble->mutex);
+
+    if(ble->serial) {
+        furi_hal_serial_async_rx_stop(ble->serial);
+        furi_hal_serial_deinit(ble->serial);
+        furi_hal_serial_control_release(ble->serial);
+        ble->serial = NULL;
+    }
+
+    furi_stream_buffer_free(ble->rx_stream);
+    furi_mutex_free(ble->devices_mutex);
     free(ble);
 }
+
+// ── Accessors ─────────────────────────────────────────────────────────────────
 
 EslBleState esl_ble_get_state(EslBle* ble) {
     furi_assert(ble);
@@ -124,113 +314,14 @@ EslBleState esl_ble_get_state(EslBle* ble) {
 
 uint8_t esl_ble_get_scan_results(EslBle* ble, EslDevice out_devices[ESL_MAX_DEVICES]) {
     furi_assert(ble);
-    furi_mutex_acquire(ble->mutex, FuriWaitForever);
+    furi_mutex_acquire(ble->devices_mutex, FuriWaitForever);
     uint8_t cnt = ble->device_count;
-    for(uint8_t i = 0; i < cnt; i++) {
-        out_devices[i] = ble->devices[i];
-    }
-    furi_mutex_release(ble->mutex);
+    for(uint8_t i = 0; i < cnt; i++) out_devices[i] = ble->devices[i];
+    furi_mutex_release(ble->devices_mutex);
     return cnt;
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-static bool _starts_with(const char* s, const char* prefix) {
-    while(*prefix) {
-        if(*s++ != *prefix++) return false;
-    }
-    return true;
-}
-
-// Format 6 raw MAC bytes (LSB first as returned by BLE stack) to "AA:BB:CC:DD:EE:FF"
-static void _mac_bytes_to_str(const uint8_t mac_bytes[6], char out[ESL_MAC_STR_LEN]) {
-    snprintf(out, ESL_MAC_STR_LEN,
-        "%02X:%02X:%02X:%02X:%02X:%02X",
-        mac_bytes[5], mac_bytes[4], mac_bytes[3],
-        mac_bytes[2], mac_bytes[1], mac_bytes[0]);
-}
-
-// ── BLE scan / connect / upload ───────────────────────────────────────────────
-//
-// The Flipper Zero's official firmware exposes BLE scanning via the bt service
-// (furi_hal_bt). The implementation below uses the gap_* APIs from the
-// STM32WB55 BLE stack, which are available in community firmware.
-//
-// If direct BLE Central is not available on your firmware build, use the
-// companion Python script via USB Serial (see esl_ui.c serial mode).
-
-// BLE GAP scan callback — called from BLE stack for each advertisement seen
-// NOTE: community firmware passes GapEvent by value, not pointer.
-static void _ble_gap_scan_cb(GapEvent event, void* ctx) {
-    EslBle* ble = (EslBle*)ctx;
-    if(!ble || event.type != GapEventTypeDeviceFound) return;
-
-    const GapDeviceFound* dev = &event.data.device_found;
-
-    // Detect tag type:
-    //   ATC_TLSR_Paper: device name starts with "ESL_"
-    //   BT SIG ESL (Vusion): advertisement contains ESL Service UUID 0x184D
-    bool is_atc    = dev->local_name[0] && _starts_with(dev->local_name, ESL_BLE_PREFIX);
-    bool is_vusion = false;
-
-    // Check advertisement service UUIDs for BT SIG ESL Service (0x184D)
-    // The GapDeviceFound.service_uuid array (if present in community firmware)
-    // may contain advertised service UUIDs.  We also fall back to checking the
-    // manufacturer data or name for "Vusion" / "vusion".
-    if(!is_atc) {
-        // Check name-based heuristic for Vusion tags
-        const char* name = dev->local_name;
-        if(name[0]) {
-            // Case-insensitive substring check for "vusion" or "esl"
-            for(int i = 0; name[i] && i < 24; i++) {
-                char c = name[i] | 0x20;  // tolower
-                if(c == 'v' && (name[i+1]|0x20) == 'u' && (name[i+2]|0x20) == 's') {
-                    is_vusion = true;
-                    break;
-                }
-            }
-        }
-        // The BT SIG ESL service UUID (0x184D) will be in the advertisement's
-        // service UUID list. In community firmware, dev->service_uuid[0..N] may
-        // provide this — check for 0x184D (little-endian: 4d 18 in first 2 bytes).
-        // If the platform doesn't expose service UUIDs during scan, we rely on
-        // attempting connection and reading the GATT service list.
-        // For now we check the local name; a future firmware update may expose UUIDs.
-    }
-
-    if(!is_atc && !is_vusion) return;
-
-    furi_mutex_acquire(ble->mutex, FuriWaitForever);
-
-    // Check if already in list
-    for(uint8_t i = 0; i < ble->device_count; i++) {
-        if(strncmp(ble->devices[i].name, dev->local_name, ESL_DEVICE_NAME_LEN - 1) == 0) {
-            ble->devices[i].rssi = dev->rssi;
-            furi_mutex_release(ble->mutex);
-            return;
-        }
-    }
-
-    // Add new device
-    if(ble->device_count < ESL_MAX_DEVICES) {
-        EslDevice* d = &ble->devices[ble->device_count++];
-        strncpy(d->name, dev->local_name, ESL_DEVICE_NAME_LEN - 1);
-        d->name[ESL_DEVICE_NAME_LEN - 1] = '\0';
-        _mac_bytes_to_str(dev->addr, d->mac);
-        d->rssi  = dev->rssi;
-        d->valid = true;
-        // Annotate tag type in name if no name was provided
-        if(!d->name[0]) {
-            strncpy(d->name, is_vusion ? "VUSION_ESL" : "ESL_??", ESL_DEVICE_NAME_LEN - 1);
-        }
-
-        if(ble->on_scan) {
-            ble->on_scan(ble->devices, ble->device_count, ble->cb_ctx);
-        }
-    }
-
-    furi_mutex_release(ble->mutex);
-}
+// ── Scan ──────────────────────────────────────────────────────────────────────
 
 void esl_ble_start_scan(
     EslBle* ble,
@@ -241,171 +332,90 @@ void esl_ble_start_scan(
 {
     furi_assert(ble);
     if(ble->state != EslBleStateIdle) return;
+    UNUSED(timeout_ms);  // ESP32 firmware uses its own scan timeout
 
-    ble->state      = EslBleStateScanning;
+    ble->state        = EslBleStateScanning;
     ble->device_count = 0;
-    ble->on_scan    = on_scan;
-    ble->on_done    = on_done;
-    ble->cb_ctx     = ctx;
-
     memset(ble->devices, 0, sizeof(ble->devices));
+    ble->on_scan = on_scan;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
 
-    // Acquire the bt service and start GAP scan
-    Bt* bt = furi_record_open(RECORD_BT);
-    UNUSED(bt);
-
-    // Start BLE scanning via the HAL (community firmware API)
-    furi_hal_bt_start_scan(_ble_gap_scan_cb, ble);
-
-    // Schedule a timer to stop scanning after timeout
-    if(timeout_ms > 0) {
-        furi_delay_ms(timeout_ms);
-        esl_ble_stop_scan(ble);
-    }
-
-    furi_record_close(RECORD_BT);
+    strncpy(ble->pending_cmd, "SCAN\n", sizeof(ble->pending_cmd) - 1);
+    _start_worker(ble);
 }
 
 void esl_ble_stop_scan(EslBle* ble) {
     furi_assert(ble);
     if(ble->state != EslBleStateScanning) return;
-
-    furi_hal_bt_stop_scan();
+    ble->abort_requested = true;
+    if(ble->worker) {
+        furi_thread_join(ble->worker);
+        furi_thread_free(ble->worker);
+        ble->worker = NULL;
+    }
     ble->state = EslBleStateIdle;
-
     if(ble->on_done) {
-        ble->on_done(true, NULL, ble->cb_ctx);
+        ble->on_done(true, "Scan stopped", ble->cb_ctx);
         ble->on_done = NULL;
     }
 }
 
-// ── GATT write helper ─────────────────────────────────────────────────────────
+// ── Connect / Disconnect ──────────────────────────────────────────────────────
 
-static bool _gatt_write(EslBle* ble, const uint8_t* data, uint16_t len) {
-    // Write to the EPD characteristic via the BLE GATT client
-    // furi_hal_bt_gatt_client_write is available in community firmware builds
-    // that expose the full STM32WB55 BLE stack GATT client API.
-    int ret = furi_hal_bt_gatt_client_write(EPD_CHAR_UUID, data, len);
-    return (ret == 0);
-}
-
-// ── Connect ───────────────────────────────────────────────────────────────────
-
-void esl_ble_connect(EslBle* ble, const char* mac, EslBleDoneCallback on_done, void* ctx) {
+void esl_ble_connect(
+    EslBle* ble,
+    const char* mac,
+    EslTagType tag_type,
+    EslBleDoneCallback on_done,
+    void* ctx)
+{
     furi_assert(ble);
     furi_assert(mac);
-
-    if(ble->state != EslBleStateIdle) {
-        if(on_done) on_done(false, "BLE busy", ctx);
-        return;
-    }
-
-    ble->state   = EslBleStateConnecting;
-    ble->on_done = on_done;
-    ble->cb_ctx  = ctx;
     strncpy(ble->connected_mac, mac, ESL_MAC_STR_LEN - 1);
-
-    // Use the HAL to initiate connection
-    bool ok = furi_hal_bt_connect(mac);
-    if(!ok) {
-        ble->state = EslBleStateError;
-        if(on_done) on_done(false, "Connect failed", ctx);
-        return;
-    }
-
+    ble->connected_type = tag_type;
     ble->state = EslBleStateConnected;
-    if(on_done) {
-        on_done(true, NULL, ctx);
-        ble->on_done = NULL;
-    }
+    if(on_done) on_done(true, "Ready", ctx);
 }
 
 void esl_ble_disconnect(EslBle* ble) {
     furi_assert(ble);
-    if(ble->state == EslBleStateConnected || ble->state == EslBleStateUploading) {
-        furi_hal_bt_disconnect();
-        ble->state = EslBleStateIdle;
-        ble->connected_mac[0] = '\0';
-    }
+    ble->connected_mac[0] = '\0';
+    ble->state = EslBleStateIdle;
 }
 
-// ── Image upload ──────────────────────────────────────────────────────────────
+// ── ATC operations ────────────────────────────────────────────────────────────
 
 void esl_ble_upload_image(
     EslBle* ble,
-    const EslImageBuffer* img,
+    const char* price,
+    const char* label,
     EslBleProgressCallback on_progress,
     EslBleDoneCallback on_done,
     void* ctx)
 {
     furi_assert(ble);
-    furi_assert(img);
-
     if(ble->state != EslBleStateConnected) {
         if(on_done) on_done(false, "Not connected", ctx);
         return;
     }
-
     ble->state       = EslBleStateUploading;
     ble->on_progress = on_progress;
     ble->on_done     = on_done;
     ble->cb_ctx      = ctx;
 
-    uint8_t cmd_buf[ESL_WRITE_MTU + 1];
-    uint8_t cmd_len;
-    bool ok = true;
-
-    // Step 1: Clear to white
-    cmd_len = esl_cmd_clear(cmd_buf, 0xFF);
-    ok = _gatt_write(ble, cmd_buf, cmd_len);
-    if(!ok) goto upload_fail;
-
-    // Step 2: Set write position to 0
-    cmd_len = esl_cmd_set_pos(cmd_buf, 0);
-    ok = _gatt_write(ble, cmd_buf, cmd_len);
-    if(!ok) goto upload_fail;
-
-    // Step 3: Write image data in chunks
-    uint32_t sent = 0;
-    uint32_t total = img->size;
-
-    while(sent < total) {
-        uint32_t remaining = total - sent;
-        uint8_t  chunk_sz  = (remaining > ESL_WRITE_MTU) ? ESL_WRITE_MTU : (uint8_t)remaining;
-
-        cmd_len = esl_cmd_write(cmd_buf, img->data + sent, chunk_sz);
-        ok = _gatt_write(ble, cmd_buf, cmd_len);
-        if(!ok) goto upload_fail;
-
-        sent += chunk_sz;
-
-        if(on_progress) {
-            uint8_t pct = (uint8_t)((uint64_t)sent * 100 / total);
-            on_progress(pct, ctx);
-        }
+    if(label && label[0]) {
+        snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+                 "ATC_PRICE %s %s %s\n", ble->connected_mac, price, label);
+    } else {
+        snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+                 "ATC_PRICE %s %s\n", ble->connected_mac, price);
     }
-
-    // Step 4: Trigger display refresh
-    cmd_len = esl_cmd_display(cmd_buf);
-    ok = _gatt_write(ble, cmd_buf, cmd_len);
-    if(!ok) goto upload_fail;
-
-    // Wait for e-ink display to refresh
-    furi_delay_ms(ESL_DISPLAY_WAIT_MS);
-
-    ble->state = EslBleStateConnected;
-    if(on_done) on_done(true, "Upload complete", ctx);
-    return;
-
-upload_fail:
-    ble->state = EslBleStateError;
-    if(on_done) on_done(false, "Write failed — check connection", ctx);
+    _start_worker(ble);
 }
 
-void esl_ble_send_command(
+void esl_ble_clear_display(
     EslBle* ble,
-    const uint8_t* cmd_buf,
-    uint8_t cmd_len,
     EslBleDoneCallback on_done,
     void* ctx)
 {
@@ -414,6 +424,83 @@ void esl_ble_send_command(
         if(on_done) on_done(false, "Not connected", ctx);
         return;
     }
-    bool ok = _gatt_write(ble, cmd_buf, cmd_len);
-    if(on_done) on_done(ok, ok ? NULL : "Command write failed", ctx);
+    ble->state   = EslBleStateUploading;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
+    ble->on_progress = NULL;
+
+    snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+             "ATC_CLEAR %s\n", ble->connected_mac);
+    _start_worker(ble);
+}
+
+// ── Vusion operations ─────────────────────────────────────────────────────────
+
+void esl_ble_vusion_provision(EslBle* ble, EslBleDoneCallback on_done, void* ctx) {
+    furi_assert(ble);
+    if(ble->state != EslBleStateConnected) {
+        if(on_done) on_done(false, "Not connected", ctx);
+        return;
+    }
+    ble->state   = EslBleStateUploading;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
+    ble->on_progress = NULL;
+
+    snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+             "VUSION_PROVISION %s\n", ble->connected_mac);
+    _start_worker(ble);
+}
+
+void esl_ble_vusion_display(
+    EslBle* ble,
+    uint8_t image_idx,
+    EslBleDoneCallback on_done,
+    void* ctx)
+{
+    furi_assert(ble);
+    if(ble->state != EslBleStateConnected) {
+        if(on_done) on_done(false, "Not connected", ctx);
+        return;
+    }
+    ble->state   = EslBleStateUploading;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
+    ble->on_progress = NULL;
+
+    snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+             "VUSION_DISPLAY %s %u\n", ble->connected_mac, (unsigned)image_idx);
+    _start_worker(ble);
+}
+
+void esl_ble_vusion_ping(EslBle* ble, EslBleDoneCallback on_done, void* ctx) {
+    furi_assert(ble);
+    if(ble->state != EslBleStateConnected) {
+        if(on_done) on_done(false, "Not connected", ctx);
+        return;
+    }
+    ble->state   = EslBleStateUploading;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
+    ble->on_progress = NULL;
+
+    snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+             "VUSION_PING %s\n", ble->connected_mac);
+    _start_worker(ble);
+}
+
+void esl_ble_vusion_reset(EslBle* ble, EslBleDoneCallback on_done, void* ctx) {
+    furi_assert(ble);
+    if(ble->state != EslBleStateConnected) {
+        if(on_done) on_done(false, "Not connected", ctx);
+        return;
+    }
+    ble->state   = EslBleStateUploading;
+    ble->on_done = on_done;
+    ble->cb_ctx  = ctx;
+    ble->on_progress = NULL;
+
+    snprintf(ble->pending_cmd, sizeof(ble->pending_cmd),
+             "VUSION_RESET %s\n", ble->connected_mac);
+    _start_worker(ble);
 }
