@@ -155,15 +155,17 @@ static bool _scan_view_input(InputEvent* evt, void* ctx) {
             uint8_t cursor = app->scan_cursor;
             if(cursor >= app->scan_count) cursor = 0;
             app->selected_device = app->scan_results[cursor];
-            scene_manager_handle_custom_event(
-                app->scene_manager, EslCustomEventDeviceSelected);
+            // Must use view_dispatcher_send_custom_event here (not scene_manager
+            // directly) to avoid re-entrancy: input callbacks must not call
+            // view_dispatcher_switch_to_view or scene_manager_next_scene.
+            view_dispatcher_send_custom_event(
+                app->view_dispatcher, EslCustomEventDeviceSelected);
             return true;
         }
-        if(evt->key == InputKeyBack) {
-            esl_ble_stop_scan(app->ble);
-            scene_manager_previous_scene(app->scene_manager);
-            return true;
-        }
+        // Back key: do NOT handle here. Returning false lets the ViewDispatcher
+        // fire _back_event_cb → scene_manager_handle_back_event → on_exit
+        // (which calls esl_ble_stop_scan). Calling scene_manager_previous_scene
+        // from an input callback causes a re-entrancy crash.
     }
     return false;
 }
@@ -267,6 +269,7 @@ bool esl_scene_device_menu_on_event(void* ctx, SceneManagerEvent event) {
             scene_manager_next_scene(app->scene_manager, EslScenePriceEntry);
             return true;
         case EslDeviceMenuClear:
+            app->price_buf[0] = '\0';  // ensure _upload_worker takes the clear path
             scene_manager_next_scene(app->scene_manager, EslSceneUploading);
             return true;
         case EslDeviceMenuModelBW:
@@ -304,20 +307,25 @@ void esl_scene_vusion_menu_on_enter(void* ctx) {
     EslApp* app = (EslApp*)ctx;
     submenu_reset(app->submenu);
 
-    char header[40];
-    snprintf(header, sizeof(header), "%s [Vusion]",
+    // Build header and slot labels into EslApp members (not stack locals).
+    // submenu_set_header / submenu_add_item store raw pointers — they must
+    // outlive this function, so stack-allocated strings would dangle after
+    // on_enter returns and crash on the first draw call.
+    snprintf(app->vusion_header, sizeof(app->vusion_header),
+             "%s [Vusion]",
              app->selected_device.name[0]
                  ? app->selected_device.name
                  : app->selected_device.mac);
-    submenu_set_header(app->submenu, header);
+    submenu_set_header(app->submenu, app->vusion_header);
 
     submenu_add_item(app->submenu, "Provision Tag",          EslVusionMenuProvision,    _vusion_submenu_cb, app);
 
-    char img_prev[24], img_next[24];
-    snprintf(img_prev, sizeof(img_prev), "< Image Slot %u", app->vusion_image_idx);
-    snprintf(img_next, sizeof(img_next), "> Image Slot %u", app->vusion_image_idx);
-    submenu_add_item(app->submenu, img_prev,                 EslVusionMenuDisplayPrev,  _vusion_submenu_cb, app);
-    submenu_add_item(app->submenu, img_next,                 EslVusionMenuDisplayNext,  _vusion_submenu_cb, app);
+    snprintf(app->vusion_img_prev, sizeof(app->vusion_img_prev),
+             "< Image Slot %u", app->vusion_image_idx);
+    snprintf(app->vusion_img_next, sizeof(app->vusion_img_next),
+             "> Image Slot %u", app->vusion_image_idx);
+    submenu_add_item(app->submenu, app->vusion_img_prev,     EslVusionMenuDisplayPrev,  _vusion_submenu_cb, app);
+    submenu_add_item(app->submenu, app->vusion_img_next,     EslVusionMenuDisplayNext,  _vusion_submenu_cb, app);
     submenu_add_item(app->submenu, "Ping",                   EslVusionMenuPing,         _vusion_submenu_cb, app);
     submenu_add_item(app->submenu, "Factory Reset",          EslVusionMenuReset,        _vusion_submenu_cb, app);
 
@@ -523,7 +531,17 @@ bool esl_scene_uploading_on_event(void* ctx, SceneManagerEvent event) {
 }
 
 void esl_scene_uploading_on_exit(void* ctx) {
-    UNUSED(ctx);
+    EslApp* app = (EslApp*)ctx;
+    // Abort any in-progress BLE operation so the worker doesn't hold resources
+    // after we navigate away. If no operation is running this is a no-op.
+    esl_ble_abort_operation(app->ble);
+    // Join and free the upload dispatch thread (it finishes quickly after
+    // kicking off ble->worker, but we must not leave a dangling handle).
+    if(app->upload_thread) {
+        furi_thread_join(app->upload_thread);
+        furi_thread_free(app->upload_thread);
+        app->upload_thread = NULL;
+    }
 }
 
 // ── Result Scene ──────────────────────────────────────────────────────────────

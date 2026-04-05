@@ -9,7 +9,7 @@ App(
         "storage",
         "notification",
     ],
-    stack_size=4 * 1024,
+    stack_size=6 * 1024,
     fap_category="Tools",
     fap_version=(1, 0),
     fap_description="Control Hanshow Stellar e-ink price tags over BLE.",

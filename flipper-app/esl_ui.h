@@ -98,6 +98,11 @@ typedef struct EslApp {
     // Vusion image cycling
     uint8_t                 vusion_image_idx;
 
+    // Persistent label storage for Vusion submenu (avoids dangling stack pointers)
+    char                    vusion_header[48];
+    char                    vusion_img_prev[28];
+    char                    vusion_img_next[28];
+
 } EslApp;
 
 // ── Scene handlers ────────────────────────────────────────────────────────────

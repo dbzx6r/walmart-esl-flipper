@@ -175,3 +175,10 @@ void esl_ble_vusion_reset(
 
 /** Get the list of devices found during the last scan. */
 uint8_t esl_ble_get_scan_results(EslBle* ble, EslDevice out_devices[ESL_MAX_DEVICES]);
+
+/**
+ * Abort any in-progress operation (upload / provision / ping / reset).
+ * Sets abort_requested, joins the worker thread, resets state to Idle.
+ * Safe to call when no operation is running (no-op in that case).
+ */
+void esl_ble_abort_operation(EslBle* ble);

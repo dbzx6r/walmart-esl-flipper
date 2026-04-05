@@ -86,6 +86,7 @@ static void _uart_rx_cb(
 // ── UART transmit helper ──────────────────────────────────────────────────────
 
 static void _uart_send(EslBle* ble, const char* str) {
+    if(!ble->serial) return;  // no ESP32 bridge connected — skip silently
     furi_hal_serial_tx(ble->serial, (const uint8_t*)str, strlen(str));
     furi_hal_serial_tx_wait_complete(ble->serial);
 }
@@ -252,6 +253,15 @@ static int32_t _worker(void* ctx) {
 // ── Start worker helper ───────────────────────────────────────────────────────
 
 static void _start_worker(EslBle* ble) {
+    // If no serial handle, immediately report the error rather than crashing
+    // inside _uart_send or hanging forever waiting for a response.
+    if(!ble->serial) {
+        ble->state = EslBleStateError;
+        if(ble->on_done) {
+            ble->on_done(false, "No ESP32 bridge — check GPIO wiring (C1/C0)", ble->cb_ctx);
+        }
+        return;
+    }
     // Join and free any previous worker
     if(ble->worker) {
         furi_thread_join(ble->worker);
@@ -361,6 +371,22 @@ void esl_ble_stop_scan(EslBle* ble) {
         ble->on_done(true, "Scan stopped", ble->cb_ctx);
         ble->on_done = NULL;
     }
+}
+
+void esl_ble_abort_operation(EslBle* ble) {
+    furi_assert(ble);
+    if(ble->state != EslBleStateUploading) return;
+    // Signal the worker to break out of its read loop within ~5ms
+    ble->abort_requested = true;
+    if(ble->worker) {
+        furi_thread_join(ble->worker);
+        furi_thread_free(ble->worker);
+        ble->worker = NULL;
+    }
+    // Clear callbacks so a late wake-up can't send a stale event
+    ble->on_done     = NULL;
+    ble->on_progress = NULL;
+    ble->state       = EslBleStateIdle;
 }
 
 // ── Connect / Disconnect ──────────────────────────────────────────────────────
