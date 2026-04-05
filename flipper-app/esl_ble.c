@@ -131,7 +131,9 @@ static bool _parse_device_line(const char* line, EslDevice* dev) {
     if(parsed < 4) return false;
 
     strncpy(dev->name, name, ESL_DEVICE_NAME_LEN - 1);
+    dev->name[ESL_DEVICE_NAME_LEN - 1] = '\0';
     strncpy(dev->mac,  mac,  ESL_MAC_STR_LEN - 1);
+    dev->mac[ESL_MAC_STR_LEN - 1] = '\0';
     dev->rssi  = (int8_t)rssi;
     dev->valid = true;
 
@@ -373,6 +375,7 @@ void esl_ble_connect(
     furi_assert(ble);
     furi_assert(mac);
     strncpy(ble->connected_mac, mac, ESL_MAC_STR_LEN - 1);
+    ble->connected_mac[ESL_MAC_STR_LEN - 1] = '\0';
     ble->connected_type = tag_type;
     ble->state = EslBleStateConnected;
     if(on_done) on_done(true, "Ready", ctx);

@@ -305,19 +305,18 @@ def info(address: str):
 @click.option("--baud", default=115200, show_default=True, help="Baud rate.")
 def serial(port: str, baud: int):
     """
-    USB Serial bridge mode — listen for commands from the Flipper Zero FAP.
+    USB Serial bridge mode — PC alternative to the ESP32 BLE bridge.
 
-    The Flipper Zero app sends newline-delimited commands over USB CDC serial:
+    Connect your Flipper to this PC via USB, then run this command.
+    The companion will relay BLE commands from the Flipper using the
+    same protocol as the ESP32 bridge firmware.
 
-      ESL:SCAN
-      ESL:PRICE:<MAC>:<model>:<price_text>:<label_text>
-      ESL:IMAGE:<MAC>:<model>:<hex_encoded_buffer>
-      ESL:CLEAR:<MAC>
-
-    Responses are sent back as:
-      OK:<message>
-      ERR:<message>
-      SCAN:<mac>:<name>:<rssi>  (one per device found)
+    Protocol (newline-terminated):
+      Flipper → PC:  SCAN / ATC_PRICE <mac> <price> [label] / ATC_CLEAR <mac>
+                     VUSION_PROVISION <mac> / VUSION_DISPLAY <mac> <slot>
+                     VUSION_PING <mac> / VUSION_RESET <mac>
+      PC → Flipper:  DEVICE <name> <mac> <rssi> ATC|VUSION / DONE
+                     OK <msg> / ERROR <msg> / PROGRESS <0-100>
     """
     try:
         import serial as pyserial
@@ -349,62 +348,148 @@ def serial(port: str, baud: int):
 
 
 async def _handle_serial_command(line: str) -> str:
-    """Parse and execute a serial command from the Flipper Zero FAP."""
-    parts = line.split(":")
-    if len(parts) < 2:
-        return "ERR:Unknown command"
+    """
+    Parse and execute a serial command from the Flipper Zero FAP.
+
+    Implements the same protocol as the ESP32 BLE bridge so the companion
+    can be used as a PC-based alternative (no ESP32 hardware needed).
+
+    Flipper → Companion:
+        SCAN
+        ATC_PRICE <mac> <price> [label]
+        ATC_CLEAR <mac>
+        VUSION_PROVISION <mac>
+        VUSION_DISPLAY <mac> <slot>
+        VUSION_PING <mac>
+        VUSION_RESET <mac>
+
+    Companion → Flipper:
+        DEVICE <name> <mac> <rssi> ATC|VUSION
+        DONE
+        OK <message>
+        ERROR <message>
+        PROGRESS <0-100>
+    """
+    parts = line.strip().split()
+    if not parts:
+        return ""
 
     cmd = parts[0].upper()
 
     try:
-        if cmd == "ESL" and parts[1].upper() == "SCAN":
-            # ESL:SCAN
-            devices = await BleakScanner.discover(timeout=8.0)
+        # ── SCAN ──────────────────────────────────────────────────────────────
+        if cmd == "SCAN":
+            devices = await BleakScanner.discover(timeout=10.0)
             responses = []
             for d in devices:
-                if d.name and d.name.startswith(ESL_NAME_PREFIX):
-                    rssi = getattr(d, "rssi", 0)
-                    responses.append(f"SCAN:{d.address}:{d.name}:{rssi}")
-            return "\n".join(responses) if responses else "OK:No devices found"
+                name = d.name or ""
+                is_atc    = name.startswith("ESL_")
+                is_vusion = False
+                if hasattr(d, "metadata"):
+                    uuids = d.metadata.get("uuids", [])
+                    is_vusion = any("184d" in u.lower() for u in uuids)
+                if is_atc or is_vusion:
+                    rssi   = getattr(d, "rssi", 0)
+                    kind   = "VUSION" if is_vusion else "ATC"
+                    label  = name if name else "?"
+                    responses.append(f"DEVICE {label} {d.address} {rssi} {kind}")
+            result = "\n".join(responses) + "\nDONE" if responses else "DONE"
+            return result
 
-        elif cmd == "ESL" and parts[1].upper() == "PRICE":
-            # ESL:PRICE:<MAC>:<model>:<price_text>:<label_text>
-            if len(parts) < 6:
-                return "ERR:PRICE needs MAC,model,price,label"
-            mac, model_str, price_text, label = parts[2], parts[3], parts[4], parts[5]
-            display_model = MODEL_MAP.get(model_str.upper(), DisplayModel.BW213)
-            buf = render_price_tag(price_text, label=label, model=display_model)
-            async with BleakClient(mac) as client:
-                await _upload_buffer(client, buf, progress=False)
-            return "OK:Price uploaded"
-
-        elif cmd == "ESL" and parts[1].upper() == "IMAGE":
-            # ESL:IMAGE:<MAC>:<model>:<hex_data>
-            if len(parts) < 5:
-                return "ERR:IMAGE needs MAC,model,hex_data"
-            mac, model_str, hex_data = parts[2], parts[3], parts[4]
-            buf = bytes.fromhex(hex_data)
-            async with BleakClient(mac) as client:
-                await _upload_buffer(client, buf, progress=False)
-            return "OK:Image uploaded"
-
-        elif cmd == "ESL" and parts[1].upper() == "CLEAR":
-            # ESL:CLEAR:<MAC>
+        # ── ATC_PRICE ─────────────────────────────────────────────────────────
+        elif cmd == "ATC_PRICE":
             if len(parts) < 3:
-                return "ERR:CLEAR needs MAC"
-            mac = parts[2]
+                return "ERROR missing args for ATC_PRICE"
+            mac        = parts[1]
+            price_text = parts[2]
+            label      = parts[3] if len(parts) > 3 else ""
+            buf        = render_price_tag(price_text, label=label, model=DisplayModel.BW213)
+            async with BleakClient(mac) as client:
+                await _upload_buffer(client, buf, progress=False)
+            return "OK Price set"
+
+        # ── ATC_CLEAR ─────────────────────────────────────────────────────────
+        elif cmd == "ATC_CLEAR":
+            if len(parts) < 2:
+                return "ERROR missing MAC"
+            mac = parts[1]
             async with BleakClient(mac) as client:
                 await _clear_display(client, 0xFF)
                 await _write_epd(client, bytes([CMD_DISPLAY]))
-            return "OK:Cleared"
+            return "OK Display cleared"
+
+        # ── VUSION_PROVISION ─────────────────────────────────────────────────
+        elif cmd == "VUSION_PROVISION":
+            if len(parts) < 2:
+                return "ERROR missing MAC"
+            mac = parts[1]
+            device = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if device is None:
+                return f"ERROR Device {mac} not found"
+            async with esl_vusion.BleakClient(device, timeout=30.0) as client:
+                try:
+                    await client.pair()
+                except Exception:
+                    pass
+                await esl_vusion.provision_tag(client, esl_id=1, group_id=0)
+            return "OK Provisioned"
+
+        # ── VUSION_DISPLAY ────────────────────────────────────────────────────
+        elif cmd == "VUSION_DISPLAY":
+            if len(parts) < 2:
+                return "ERROR missing MAC"
+            mac  = parts[1]
+            slot = int(parts[2]) if len(parts) > 2 else 0
+            device = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if device is None:
+                return f"ERROR Device {mac} not found"
+            async with esl_vusion.BleakClient(device, timeout=30.0) as client:
+                try:
+                    await client.pair()
+                except Exception:
+                    pass
+                await esl_vusion.cmd_display_image(client, esl_id=1, display_index=0, image_index=slot)
+            return f"OK Display image {slot}"
+
+        # ── VUSION_PING ───────────────────────────────────────────────────────
+        elif cmd == "VUSION_PING":
+            if len(parts) < 2:
+                return "ERROR missing MAC"
+            mac = parts[1]
+            device = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if device is None:
+                return f"ERROR Device {mac} not found"
+            async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+                try:
+                    await client.pair()
+                except Exception:
+                    pass
+                await esl_vusion.cmd_ping(client, esl_id=1)
+            return "OK Pong"
+
+        # ── VUSION_RESET ──────────────────────────────────────────────────────
+        elif cmd == "VUSION_RESET":
+            if len(parts) < 2:
+                return "ERROR missing MAC"
+            mac = parts[1]
+            device = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if device is None:
+                return f"ERROR Device {mac} not found"
+            async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+                try:
+                    await client.pair()
+                except Exception:
+                    pass
+                await esl_vusion.cmd_factory_reset(client, esl_id=1)
+            return "OK Reset"
 
         else:
-            return f"ERR:Unknown command {line!r}"
+            return f"ERROR Unknown command: {cmd}"
 
     except BleakError as e:
-        return f"ERR:BLE error: {e}"
+        return f"ERROR BLE: {e}"
     except Exception as e:
-        return f"ERR:{e}"
+        return f"ERROR {e}"
 
 
 if __name__ == "__main__":

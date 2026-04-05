@@ -449,9 +449,11 @@ static void _upload_done_cb(bool success, const char* msg, void* ctx) {
     app->result_ok = success;
     if(msg && msg[0]) {
         strncpy(app->result_msg, msg, sizeof(app->result_msg) - 1);
+        app->result_msg[sizeof(app->result_msg) - 1] = '\0';
     } else {
         strncpy(app->result_msg, success ? "Done!" : "Failed.",
                 sizeof(app->result_msg) - 1);
+        app->result_msg[sizeof(app->result_msg) - 1] = '\0';
     }
     view_dispatcher_send_custom_event(app->view_dispatcher,
         success ? EslCustomEventUploadDone : EslCustomEventUploadFail);
