@@ -101,14 +101,44 @@ The WebBluetooth uploader (browser-based, no install) is the simplest:
 
 ## ❌ Incompatible Models
 
-Models **without** the `N` designator use a different SoC (not TLSR8359) and are **not compatible**:
+Models **without** the `N` designator use a different SoC (not TLSR8359) and are **not compatible**
+with the ATC_TLSR_Paper firmware:
 
 | Model | Reason Incompatible |
 |-------|---------------------|
 | Stellar-M@ | No NFC/TLSR chip |
 | Stellar-M3@ | No NFC/TLSR chip |
 | Solum ZBS243-based tags | Different SoC entirely (ZBS243) |
-| SES-imagotag VUSION tags | Proprietary locked firmware |
+
+---
+
+## ✅ Compatible via BT SIG ESL Protocol (SES-imagotag Vusion / HRD3 series)
+
+The **SES-imagotag Vusion HRD3-series** tags (including the **HRD3-0210-A**) use a
+**Qualcomm QCC710** BLE 5.3 chip and implement the **Bluetooth SIG Electronic Shelf
+Label Service** (UUID `0x184D`), a fully documented public standard.
+
+These tags work with the companion Python script — **no custom firmware required**.
+
+### HRD3-0210-A — 2.13" Black/White
+
+- **Chip:** Qualcomm QCC710 (BLE 5.3)
+- **Chip marking:** `Qualcomm QCC710 002 | BTRTx008a`
+- **Protocol:** BT SIG ESL Service v1.0 (UUID `0x184D`)
+- **No firmware flashing needed** — the standard BLE spec is implemented in factory firmware
+- **Companion script:** `python esl_companion.py vusion scan`
+- **Full guide:** [docs/VUSION_ESL.md](VUSION_ESL.md)
+
+### How to Use HRD3-series Tags
+
+See the dedicated guide: **[VUSION_ESL.md](VUSION_ESL.md)**
+
+Quick start:
+```bash
+python esl_companion.py vusion scan
+python esl_companion.py vusion provision AA:BB:CC:DD:EE:FF
+python esl_companion.py vusion display  AA:BB:CC:DD:EE:FF --image-index 0
+```
 
 ---
 

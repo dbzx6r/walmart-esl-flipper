@@ -40,6 +40,7 @@ except ImportError:
     sys.exit(1)
 
 from image_converter import DisplayModel, DISPLAY_SIZE, image_to_esl, render_price_tag
+import esl_vusion
 
 # ── BLE GATT UUIDs (from ATC_TLSR_Paper firmware app_att.c) ──────────────────
 
@@ -161,7 +162,7 @@ async def _find_device(address: Optional[str]) -> BLEDevice:
 
 @click.group()
 def cli():
-    """ESL Companion — control Hanshow Stellar e-ink price tags over BLE."""
+    """ESL Companion — control Hanshow Stellar and SES-imagotag/Vusion e-ink price tags over BLE."""
 
 
 @cli.command()
@@ -408,3 +409,271 @@ async def _handle_serial_command(line: str) -> str:
 
 if __name__ == "__main__":
     cli()
+
+
+# ── Vusion / BT SIG ESL commands ─────────────────────────────────────────────
+
+@cli.group()
+def vusion():
+    """Commands for SES-imagotag/Vusion HRD-series tags (BT SIG ESL Service, UUID 0x184D)."""
+
+
+@vusion.command("scan")
+@click.option("--timeout", default=12.0, show_default=True, help="Scan duration in seconds.")
+def vusion_scan(timeout: float):
+    """Scan for SES-imagotag/Vusion ESL tags advertising BT SIG ESL Service."""
+
+    async def _scan():
+        click.echo(f"Scanning for BT SIG ESL tags (service UUID 0x184D) for {timeout:.0f}s...")
+        devices = await esl_vusion.scan_esl_tags(timeout=timeout)
+
+        if not devices:
+            click.echo(
+                "No BT SIG ESL tags found.\n"
+                "Tips:\n"
+                "  • Make sure the tag is powered on (insert battery)\n"
+                "  • Tags from eBay return to Unassociated state after ~60 min unpaired\n"
+                "  • If still not found, try a broader scan with: python esl_companion.py scan"
+            )
+            return
+
+        click.echo(f"\nFound {len(devices)} BT SIG ESL device(s):\n")
+        click.echo(f"  {'Address':<20}  {'Name':<24}  RSSI")
+        click.echo("  " + "─" * 54)
+        for d in devices:
+            rssi = getattr(d, "rssi", "?")
+            name = d.name or "(no name)"
+            click.echo(f"  {d.address:<20}  {name:<24}  {rssi} dBm")
+        click.echo()
+        click.echo("Use the address above with the other vusion sub-commands.")
+
+    asyncio.run(_scan())
+
+
+@vusion.command("provision")
+@click.argument("address")
+@click.option("--group", default=0, show_default=True, help="Group ID (0–127).")
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID (0–254).")
+def vusion_provision(address: str, group: int, esl_id: int):
+    """
+    Provision a fresh (Unassociated) tag: bond and write mandatory characteristics.
+
+    ADDRESS is the BLE MAC address from 'vusion scan', e.g. AA:BB:CC:DD:EE:FF
+
+    After provisioning the tag is in Unsynchronized state and ready for commands.
+    """
+    async def _provision():
+        click.echo(f"Looking for {address}...")
+        device = await esl_vusion.BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found. Is it powered on?")
+        client = await esl_vusion.connect_and_provision(
+            device, group_id=group, esl_id=esl_id, verbose=True
+        )
+        try:
+            info = await esl_vusion.read_device_info(client, esl_id=esl_id, group_id=group)
+            click.echo(f"\n  Tag info: {info}")
+        finally:
+            await client.disconnect()
+
+    asyncio.run(_provision())
+
+
+@vusion.command("info")
+@click.argument("address")
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID assigned during provisioning.")
+def vusion_info(address: str, esl_id: int):
+    """
+    Read display info and image slots from a provisioned tag.
+
+    ADDRESS is the BLE MAC address, e.g. AA:BB:CC:DD:EE:FF
+    """
+    async def _info():
+        from bleak import BleakScanner
+        device = await BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found.")
+        async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+            try:
+                await client.pair()
+            except Exception:
+                pass
+            info = await esl_vusion.read_device_info(client, esl_id=esl_id)
+            click.echo(f"\nTag info: {info}")
+            if info.displays:
+                click.echo("\nDisplays:")
+                for d in info.displays:
+                    click.echo(f"  [{d.index}] {d.width}×{d.height}px  {d.color_mode}")
+            click.echo(f"\nImage slots: 0 – {info.max_image_index}  ({info.max_image_index + 1} total)")
+
+    asyncio.run(_info())
+
+
+@vusion.command("display")
+@click.argument("address")
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID assigned during provisioning.")
+@click.option("--display-index", default=0, show_default=True, help="Display index (0 for single-display tags).")
+@click.option("--image-index", default=0, show_default=True, help="Image slot to display (0 = first slot).")
+def vusion_display(address: str, esl_id: int, display_index: int, image_index: int):
+    """
+    Display a pre-stored image on a provisioned tag.
+
+    ADDRESS is the BLE MAC address, e.g. AA:BB:CC:DD:EE:FF
+
+    The tag stores factory images in slots 0..Max_Image_Index.  Use 'vusion info'
+    to see how many image slots are available, then cycle through them to find
+    pre-loaded graphics.
+    """
+    async def _display():
+        from bleak import BleakScanner
+        device = await BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found.")
+        async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+            try:
+                await client.pair()
+            except Exception:
+                pass
+            click.echo(f"  Sending Display Image (display={display_index}, image={image_index})...")
+            resp = await esl_vusion.cmd_display_image(
+                client, esl_id=esl_id, display_index=display_index, image_index=image_index
+            )
+            if resp:
+                state = esl_vusion.parse_basic_state_response(resp)
+                click.echo(f"  Tag response: {state}")
+            else:
+                click.echo("  Command sent (no notification response).")
+
+    asyncio.run(_display())
+
+
+@vusion.command("ping")
+@click.argument("address")
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID.")
+def vusion_ping(address: str, esl_id: int):
+    """
+    Ping a provisioned tag and display its Basic State.
+
+    ADDRESS is the BLE MAC address, e.g. AA:BB:CC:DD:EE:FF
+    """
+    async def _ping():
+        from bleak import BleakScanner
+        device = await BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found.")
+        async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+            try:
+                await client.pair()
+            except Exception:
+                pass
+            resp = await esl_vusion.cmd_ping(client, esl_id=esl_id)
+            if resp:
+                state = esl_vusion.parse_basic_state_response(resp)
+                click.echo(f"Ping response: {state}")
+            else:
+                click.echo("Ping sent (no response).")
+
+    asyncio.run(_ping())
+
+
+@vusion.command("reset")
+@click.argument("address")
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID.")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+def vusion_reset(address: str, esl_id: int, confirm: bool):
+    """
+    Factory reset a tag — clears all provisioning data and returns to Unassociated state.
+
+    ADDRESS is the BLE MAC address, e.g. AA:BB:CC:DD:EE:FF
+
+    Use this to reclaim eBay tags that were previously associated with a store AP.
+    After reset, re-provision with 'vusion provision'.
+    """
+    if not confirm:
+        click.confirm(
+            f"Factory reset {address}? This deletes all keys and stored images.", abort=True
+        )
+
+    async def _reset():
+        from bleak import BleakScanner
+        device = await BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found.")
+        await esl_vusion.factory_reset_tag(device, esl_id=esl_id, verbose=True)
+
+    asyncio.run(_reset())
+
+
+@vusion.command("upload-image")
+@click.argument("address")
+@click.argument("image_path", type=click.Path(exists=True))
+@click.option("--id", "esl_id", default=0, show_default=True, help="ESL ID.")
+@click.option("--display-index", default=0, show_default=True, help="Display index.")
+@click.option("--image-index", default=0, show_default=True, help="Image slot to write.")
+@click.option("--width", default=0, help="Display width (0 = auto-read from tag).")
+@click.option("--height", default=0, help="Display height (0 = auto-read from tag).")
+@click.option("--color-mode", default="bw", type=click.Choice(["bw", "bwr"]),
+              show_default=True, help="Color mode: bw (1-bit) or bwr (2-bit).")
+def vusion_upload_image(
+    address: str, image_path: str, esl_id: int, display_index: int,
+    image_index: int, width: int, height: int, color_mode: str
+):
+    """
+    Upload a custom image to an ESL tag via Object Transfer Protocol (OTP).
+
+    ADDRESS is the BLE MAC address, e.g. AA:BB:CC:DD:EE:FF
+    IMAGE_PATH is any image file (PNG, JPG, BMP, etc.)
+
+    IMPORTANT: This command requires Linux with BlueZ.
+    On Windows/macOS, use 'vusion display' to cycle through factory images instead.
+    """
+    async def _upload():
+        from bleak import BleakScanner
+        device = await BleakScanner.find_device_by_address(address, timeout=10.0)
+        if device is None:
+            raise click.ClickException(f"Device {address} not found.")
+
+        # Read display dimensions from tag if not supplied
+        w, h = width, height
+        if w == 0 or h == 0:
+            click.echo("  Reading display info from tag...")
+            async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+                try:
+                    await client.pair()
+                except Exception:
+                    pass
+                info = await esl_vusion.read_device_info(client, esl_id=esl_id)
+                if not info.displays:
+                    raise click.ClickException("No display info found. Specify --width and --height.")
+                disp = info.displays[display_index] if display_index < len(info.displays) else info.displays[0]
+                w, h = disp.width, disp.height
+                click.echo(f"  Display: {w}×{h}px  ({disp.color_mode})")
+
+        click.echo(f"  Encoding image {image_path} → {w}×{h} {color_mode.upper()}...")
+        if color_mode == "bw":
+            img_bytes = esl_vusion.encode_image_bw(image_path, w, h)
+        else:
+            img_bytes = esl_vusion.encode_image_bwr(image_path, w, h)
+        click.echo(f"  Encoded: {len(img_bytes)} bytes")
+
+        click.echo(f"  Uploading to slot {image_index} via OTP (Linux/BlueZ only)...")
+        try:
+            ok = await esl_vusion.esl_otp_upload_linux(address, image_index, img_bytes)
+            if ok:
+                click.echo("  Upload complete. Sending Display Image command...")
+                async with esl_vusion.BleakClient(device, timeout=20.0) as client:
+                    try:
+                        await client.pair()
+                    except Exception:
+                        pass
+                    await esl_vusion.cmd_display_image(
+                        client, esl_id=esl_id,
+                        display_index=display_index, image_index=image_index
+                    )
+                click.echo("  Done.")
+            else:
+                raise click.ClickException("OTP upload failed.")
+        except NotImplementedError as e:
+            raise click.ClickException(str(e))
+
+    asyncio.run(_upload())

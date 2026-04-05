@@ -9,6 +9,23 @@ Repurpose Walmart / retail Hanshow Stellar e-ink price tags using a Flipper Zero
 
 ## Quick Decision Guide
 
+### I have SES-imagotag / Vusion HRD3-series tags
+
+No firmware flashing needed! Use the `vusion` commands:
+
+```bash
+cd companion && pip install -r requirements.txt
+python esl_companion.py vusion scan
+python esl_companion.py vusion provision AA:BB:CC:DD:EE:FF
+python esl_companion.py vusion display  AA:BB:CC:DD:EE:FF --image-index 0
+```
+
+Full guide: [docs/VUSION_ESL.md](docs/VUSION_ESL.md)
+
+---
+
+### I have Hanshow Stellar tags
+
 **Do I need to flash the tags?**  
 → **Yes** — always. The stock Hanshow firmware uses a proprietary encrypted protocol that only works with Hanshow's commercial base stations. Custom firmware ([ATC_TLSR_Paper](https://github.com/atc1441/ATC_TLSR_Paper)) must be flashed once per tag via UART. Takes ~2 min per tag. See [docs/FLASHING.md](docs/FLASHING.md).
 
@@ -29,17 +46,27 @@ Repurpose Walmart / retail Hanshow Stellar e-ink price tags using a Flipper Zero
 
 ## What This Does
 
-Electronic Shelf Labels (ESLs) — the small e-ink price tags found in Walmart and other retailers — use Telink TLSR8359 SoC modules.  After flashing them with the open-source **[ATC_TLSR_Paper](https://github.com/atc1441/ATC_TLSR_Paper)** firmware, they expose a simple BLE GATT interface that lets you:
+Electronic Shelf Labels (ESLs) — the small e-ink price tags found in Walmart and other retailers — can be repurposed using this tool.  Two tag families are supported:
 
+### Hanshow Stellar tags (ATC_TLSR_Paper firmware)
+After a one-time UART flash, they expose a simple BLE GATT interface that lets you:
 - Display any **custom image** (250×122 px, 1-bit B&W)
 - Show a **price tag layout** with large price text and an optional label line
 - **Clear** the display to white
+
+### SES-imagotag Vusion HRD3-series (BT SIG ESL Service)
+No firmware flashing required — these use the **Qualcomm QCC710** chip and implement
+the **Bluetooth SIG Electronic Shelf Label Service** (UUID `0x184D`):
+- Display pre-stored factory images by cycling image slots
+- Upload custom images via Object Transfer Protocol (Linux/BlueZ)
 
 ---
 
 ## Compatible Tags
 
-Hanshow Stellar tags with an **"N" in the model name** use the compatible TLSR8359 SoC:
+### Hanshow Stellar (requires firmware flash)
+
+Tags with an **"N" in the model name** use the compatible TLSR8359 SoC:
 
 | Model | Display | Size |
 |-------|---------|------|
@@ -48,8 +75,17 @@ Hanshow Stellar tags with an **"N" in the model name** use the compatible TLSR83
 | Stellar-MFN@ E31A | 212×104 B&W | 2.13" alt |
 | Stellar-S3TN@ E31HA | 200×200 B&W/Red | 1.54" |
 
-> ⚠️ **Models WITHOUT "N"** (e.g. Stellar-M@) use a different SoC and are **not compatible**.  
-> See [docs/HARDWARE.md](docs/HARDWARE.md) for full identification guide and stock firmware FAQ.
+> ⚠️ **Models WITHOUT "N"** (e.g. Stellar-M@) use a different SoC and are **not compatible**.
+
+### SES-imagotag Vusion HRD3-series (no flash needed ✅)
+
+| Model | Chip | Protocol |
+|-------|------|---------|
+| HRD3-0210-A | Qualcomm QCC710 | BT SIG ESL Service 0x184D |
+| Other HRD3-XXXX | Qualcomm QCC710 | BT SIG ESL Service 0x184D |
+
+> See [docs/VUSION_ESL.md](docs/VUSION_ESL.md) for the full Vusion guide.  
+> See [docs/HARDWARE.md](docs/HARDWARE.md) for full identification guide.
 
 ---
 

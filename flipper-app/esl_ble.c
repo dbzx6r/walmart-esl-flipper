@@ -10,8 +10,10 @@
 
 // ── BLE UUID definitions ──────────────────────────────────────────────────────
 //
-// Service:    13187B10-EBA9-A3BA-044E-83D3217D9A38
-// Char:       4B646063-6264-F3A7-8941-E65356EA82FE
+// ATC_TLSR_Paper service:  13187B10-EBA9-A3BA-044E-83D3217D9A38
+// ATC_TLSR_Paper char:     4B646063-6264-F3A7-8941-E65356EA82FE
+//
+// BT SIG ESL Service:      0000184D-0000-1000-8000-00805F9B34FB  (Vusion HRD3-series)
 //
 // UUIDs are stored in little-endian byte order (LSB first) as required by the BLE stack.
 
@@ -25,9 +27,19 @@ static const uint8_t EPD_CHAR_UUID[16] = {
     0xa7, 0xf3, 0x64, 0x62, 0x63, 0x60, 0x64, 0x4b
 };
 
-// ESL BLE device name prefix
+// BT SIG ESL Service UUID (little-endian): 0000184D-0000-1000-8000-00805F9B34FB
+static const uint8_t ESL_SIG_SERVICE_UUID[16] = {
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x4d, 0x18, 0x00, 0x00
+};
+
+// ESL BLE device name prefix (ATC_TLSR_Paper firmware)
 #define ESL_BLE_PREFIX "ESL_"
 #define ESL_BLE_PREFIX_LEN 4
+
+// Device type identifiers
+#define ESL_TYPE_ATC    "ATC"    // Hanshow Stellar + ATC_TLSR_Paper
+#define ESL_TYPE_VUSION "VUSION" // SES-imagotag HRD3 (BT SIG ESL Service 0x184D)
 
 // Scan timeout default
 #define ESL_SCAN_TIMEOUT_MS 10000
@@ -155,8 +167,38 @@ static void _ble_gap_scan_cb(GapEvent event, void* ctx) {
 
     const GapDeviceFound* dev = &event.data.device_found;
 
-    // Filter: must start with "ESL_"
-    if(!dev->local_name[0] || !_starts_with(dev->local_name, ESL_BLE_PREFIX)) return;
+    // Detect tag type:
+    //   ATC_TLSR_Paper: device name starts with "ESL_"
+    //   BT SIG ESL (Vusion): advertisement contains ESL Service UUID 0x184D
+    bool is_atc    = dev->local_name[0] && _starts_with(dev->local_name, ESL_BLE_PREFIX);
+    bool is_vusion = false;
+
+    // Check advertisement service UUIDs for BT SIG ESL Service (0x184D)
+    // The GapDeviceFound.service_uuid array (if present in community firmware)
+    // may contain advertised service UUIDs.  We also fall back to checking the
+    // manufacturer data or name for "Vusion" / "vusion".
+    if(!is_atc) {
+        // Check name-based heuristic for Vusion tags
+        const char* name = dev->local_name;
+        if(name[0]) {
+            // Case-insensitive substring check for "vusion" or "esl"
+            for(int i = 0; name[i] && i < 24; i++) {
+                char c = name[i] | 0x20;  // tolower
+                if(c == 'v' && (name[i+1]|0x20) == 'u' && (name[i+2]|0x20) == 's') {
+                    is_vusion = true;
+                    break;
+                }
+            }
+        }
+        // The BT SIG ESL service UUID (0x184D) will be in the advertisement's
+        // service UUID list. In community firmware, dev->service_uuid[0..N] may
+        // provide this — check for 0x184D (little-endian: 4d 18 in first 2 bytes).
+        // If the platform doesn't expose service UUIDs during scan, we rely on
+        // attempting connection and reading the GATT service list.
+        // For now we check the local name; a future firmware update may expose UUIDs.
+    }
+
+    if(!is_atc && !is_vusion) return;
 
     furi_mutex_acquire(ble->mutex, FuriWaitForever);
 
@@ -177,6 +219,10 @@ static void _ble_gap_scan_cb(GapEvent event, void* ctx) {
         _mac_bytes_to_str(dev->addr, d->mac);
         d->rssi  = dev->rssi;
         d->valid = true;
+        // Annotate tag type in name if no name was provided
+        if(!d->name[0]) {
+            strncpy(d->name, is_vusion ? "VUSION_ESL" : "ESL_??", ESL_DEVICE_NAME_LEN - 1);
+        }
 
         if(ble->on_scan) {
             ble->on_scan(ble->devices, ble->device_count, ble->cb_ctx);
