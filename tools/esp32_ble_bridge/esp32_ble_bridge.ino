@@ -9,15 +9,15 @@
  *   - ESP32-WROOM-32D     ($10) — GPIO16=RX, GPIO17=TX
  *   - Mayhem v2 ESP32-CAM ($95) — auto-connected, same pins as WROOM-32D
  *
- * Wiring (XIAO ESP32C3 default):
- *   Flipper GPIO C1 (pin 15, TX) ──→ ESP32 RX (GPIO20)
- *   Flipper GPIO C0 (pin 16, RX) ──→ ESP32 TX (GPIO21)
+ * Wiring (ESP32-WROOM-32D / generic DevKit):
+ *   Flipper GPIO C1 (pin 15, TX) ──→ ESP32 pin labeled "25" (our RX)
+ *   Flipper GPIO C0 (pin 16, RX) ──→ ESP32 pin labeled "26" (our TX)
  *   Flipper GND     (pin 18)     ──→ ESP32 GND
  *   Flipper 3.3V    (pin 9)      ──→ ESP32 3.3V (⚠ NOT 5V!)
  *
- * For ESP32-WROOM-32D or Mayhem v2, change RX_PIN/TX_PIN below:
- *   #define RX_PIN 16
- *   #define TX_PIN 17
+ *   ⚠ Do NOT use the pins labeled "TX" and "RX" near the USB connector —
+ *   those are GPIO1/GPIO3 (the USB debug UART) and will not work.
+ *   Use the pins labeled "25" and "26" by number on the header.
  *
  * Serial protocol (115200 baud, newline-terminated UTF-8):
  *
@@ -58,10 +58,18 @@
 
 // ── Pin configuration ─────────────────────────────────────────────────────────
 
-// ESP32-WROOM-32D / generic ESP32 DevKit default (GPIO16=RX, GPIO17=TX).
-// For XIAO ESP32C3, change to: RX_PIN 20 / TX_PIN 21
-#define RX_PIN   16
-#define TX_PIN   17
+// ESP32-WROOM-32D / generic ESP32 DevKit:
+//   Use GPIO25 (RX from Flipper) and GPIO26 (TX to Flipper).
+//   These are labeled "25" and "26" by number on the board header —
+//   NOT the "TX"/"RX" labels near the USB connector (those are GPIO1/GPIO3,
+//   the USB debug UART, and must NOT be used).
+//   Wiring:
+//     Flipper GPIO C1 (pin 15, TX) ──→ ESP32 pin "25"  (our RX)
+//     Flipper GPIO C0 (pin 16, RX) ──→ ESP32 pin "26"  (our TX)
+//     Flipper GND     (pin 18)     ──→ ESP32 GND
+//     Flipper 3.3V    (pin 9)      ──→ ESP32 3.3V  ⚠ NOT 5V!
+#define RX_PIN   25
+#define TX_PIN   26
 #define UART_BAUD 115200
 
 // ── BLE UUIDs ─────────────────────────────────────────────────────────────────
