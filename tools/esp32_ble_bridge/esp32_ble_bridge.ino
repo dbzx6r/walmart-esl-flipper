@@ -134,6 +134,7 @@ static void flipper_send(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     flipperSerial.println(buf);
+    Serial.printf("[TX->Flipper] %s\n", buf);
 }
 
 // ── BLE Scan ──────────────────────────────────────────────────────────────────
@@ -201,13 +202,17 @@ static void cmd_scan(void) {
     scan_count = 0;
     memset(scan_results, 0, sizeof(scan_results));
 
+    Serial.println("[SCAN] BLE scan starting (10s)...");
+    unsigned long t = millis();
+
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(new ESLAdvertisedDeviceCallbacks(), true);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(99);
-    scan->start(10, false);   // 10-second scan, blocking
+    scan->start(10000, false);  // 10-second scan (NimBLE v2.x uses milliseconds)
 
+    Serial.printf("[SCAN] done. elapsed=%lums found=%u\n", millis() - t, scan_count);
     flipper_send("DONE");
 }
 
@@ -655,7 +660,6 @@ void setup() {
     NimBLEDevice::init("ESL-Bridge");
     NimBLEDevice::setPower(3);   // max TX power (v2.x uses dBm integer, 3 = +3 dBm max)
 
-    flipper_send("OK ESL Bridge ready");
     Serial.println("[ESL Bridge] Ready. Waiting for Flipper commands.");
 }
 
