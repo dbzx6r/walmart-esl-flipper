@@ -130,8 +130,8 @@ static void flipper_send(const char* fmt, ...) {
 
 // ── BLE Scan ──────────────────────────────────────────────────────────────────
 
-class ESLAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
-    void onResult(NimBLEAdvertisedDevice* dev) override {
+class ESLAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
+    void onResult(const NimBLEAdvertisedDevice* dev) override {
         if(scan_count >= 32) return;
 
         bool is_atc    = false;
@@ -194,7 +194,7 @@ static void cmd_scan(void) {
     memset(scan_results, 0, sizeof(scan_results));
 
     NimBLEScan* scan = NimBLEDevice::getScan();
-    scan->setAdvertisedDeviceCallbacks(new ESLAdvertisedDeviceCallbacks(), true);
+    scan->setScanCallbacks(new ESLAdvertisedDeviceCallbacks(), true);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(99);
@@ -438,23 +438,14 @@ static bool atc_clear(const char* mac) {
 
 // ── Vusion (BT SIG ESL) ───────────────────────────────────────────────────────
 
-// Security callbacks for bonding/pairing
-class ESLSecurityCallbacks : public NimBLESecurityCallbacks {
-    uint32_t onPassKeyRequest() override { return 0; }
-    void onPassKeyNotify(uint32_t pass_key) override { (void)pass_key; }
-    bool onSecurityRequest() override { return true; }
-    void onAuthenticationComplete(ble_gap_conn_desc* desc) override { (void)desc; }
-    bool onConfirmPIN(uint32_t pin) override { (void)pin; return true; }
-};
-
 static bool vusion_connect_bonded(const char* mac, NimBLEClient** out_client) {
     NimBLEAddress addr(mac, BLE_ADDR_RANDOM);
     NimBLEClient* client = NimBLEDevice::createClient();
     client->setConnectTimeout(15);
 
+    // "Just works" pairing with bonding — no passkey needed
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
-    NimBLEDevice::setSecurityAuth(true, true, true);  // bonding + MITM + SC
-    NimBLEDevice::setSecurityCallbacks(new ESLSecurityCallbacks());
+    NimBLEDevice::setSecurityAuth(true, false, true);  // bonding, no MITM, SC
 
     if(!client->connect(addr)) {
         NimBLEDevice::deleteClient(client);
@@ -652,9 +643,9 @@ void setup() {
     flipperSerial.begin(UART_BAUD, SERIAL_8N1, RX_PIN, TX_PIN);
     flipperSerial.setTimeout(100);
 
-    // Initialize NimBLE
+    // Initialize NimBLE (v2.x handles BT controller state internally)
     NimBLEDevice::init("ESL-Bridge");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P9);   // max TX power
+    NimBLEDevice::setPower(3);   // max TX power (v2.x uses dBm integer, 3 = +3 dBm max)
 
     flipper_send("OK ESL Bridge ready");
     Serial.println("[ESL Bridge] Ready. Waiting for Flipper commands.");
