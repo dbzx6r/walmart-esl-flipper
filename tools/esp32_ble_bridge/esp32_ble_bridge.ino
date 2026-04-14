@@ -58,9 +58,10 @@
 
 // ── Pin configuration ─────────────────────────────────────────────────────────
 
-// XIAO ESP32C3 default. Change to 16/17 for WROOM-32D / Mayhem v2.
-#define RX_PIN   20
-#define TX_PIN   21
+// ESP32-WROOM-32D / generic ESP32 DevKit default (GPIO16=RX, GPIO17=TX).
+// For XIAO ESP32C3, change to: RX_PIN 20 / TX_PIN 21
+#define RX_PIN   16
+#define TX_PIN   17
 #define UART_BAUD 115200
 
 // ── BLE UUIDs ─────────────────────────────────────────────────────────────────
@@ -142,9 +143,28 @@ class ESLAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
             is_atc = true;
         }
 
-        // Vusion tags advertise BT SIG ESL Service 0x184D
+        // Vusion/SES-imagotag tags — primary: BT SIG ESL Service 0x184D
         if(dev->isAdvertisingService(NimBLEUUID("184D"))) {
             is_vusion = true;
+        }
+
+        // Vusion/SES-imagotag — fallback: name-based detection for devices that
+        // don't include service UUID in adv packet (e.g. EDB1 series, older HRD).
+        // Known advertisement name prefixes:
+        //   "VUS_"      — modern Vusion tags (V100/V300/V700 series)
+        //   "VUSION"    — older Vusion branding
+        //   "ESL-"      — generic SES-imagotag BLE labels
+        //   "EDB"       — EDB1 series (e.g. EDB1-0210-A) 2-battery Vusion tags
+        //   "IMAGOTAG"  — legacy SES-imagotag branding
+        //   "SES_"      — SES-imagotag store electronic systems
+        if(!is_atc && !is_vusion) {
+            const char* prefixes[] = { "VUS_", "VUSION", "ESL-", "EDB", "IMAGOTAG", "SES_" };
+            for(auto& pfx : prefixes) {
+                if(name.substr(0, strlen(pfx)) == pfx) {
+                    is_vusion = true;
+                    break;
+                }
+            }
         }
 
         if(!is_atc && !is_vusion) return;

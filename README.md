@@ -9,7 +9,7 @@ Repurpose Walmart / retail Hanshow Stellar e-ink price tags using a Flipper Zero
 
 ## Quick Decision Guide
 
-### I have SES-imagotag / Vusion HRD3-series tags
+### I have SES-imagotag / Vusion tags (HRD3-0210-A, EDB1-0210-A, or other Vusion series)
 
 No firmware flashing needed! Use the `vusion` commands:
 
@@ -54,10 +54,17 @@ After a one-time UART flash, they expose a simple BLE GATT interface that lets y
 - Show a **price tag layout** with large price text and an optional label line
 - **Clear** the display to white
 
-### SES-imagotag Vusion HRD3-series (BT SIG ESL Service)
-No firmware flashing required — these use the **Qualcomm QCC710** chip and implement
-the **Bluetooth SIG Electronic Shelf Label Service** (UUID `0x184D`):
+### SES-imagotag Vusion tags (BT SIG ESL Service)
+No firmware flashing required — these use the **Bluetooth SIG Electronic Shelf Label Service**
+(UUID `0x184D`) and work out of the box:
 - Display pre-stored factory images by cycling image slots
+
+**Supported Vusion models:**
+| Model | Display | Notes |
+|-------|---------|-------|
+| HRD3-0210-A | 2.1" BW | QCC710 chip, CR2032 battery |
+| EDB1-0210-A | 2.1" BW | 2× AA batteries, same ESL protocol |
+| Other Vusion V100/V300/V700 | various | Any tag advertising service 0x184D |
 - Upload custom images via Object Transfer Protocol (Linux/BlueZ)
 
 ---
