@@ -139,7 +139,15 @@ static void flipper_send(const char* fmt, ...) {
 
 // ── BLE Scan ──────────────────────────────────────────────────────────────────
 
+// Semaphore signalled by onScanEnd so cmd_scan() can block until complete.
+static SemaphoreHandle_t g_scan_sem = nullptr;
+
 class ESLAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
+    void onScanEnd(const NimBLEScanResults& results, int reason) override {
+        Serial.printf("[SCAN] onScanEnd reason=%d\n", reason);
+        if(g_scan_sem) xSemaphoreGive(g_scan_sem);
+    }
+
     void onResult(const NimBLEAdvertisedDevice* dev) override {
         if(scan_count >= 32) return;
 
@@ -198,19 +206,31 @@ class ESLAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
     }
 };
 
+static ESLAdvertisedDeviceCallbacks g_scan_callbacks;
+
 static void cmd_scan(void) {
     scan_count = 0;
     memset(scan_results, 0, sizeof(scan_results));
+
+    g_scan_sem = xSemaphoreCreateBinary();
 
     Serial.println("[SCAN] BLE scan starting (10s)...");
     unsigned long t = millis();
 
     NimBLEScan* scan = NimBLEDevice::getScan();
-    scan->setScanCallbacks(new ESLAdvertisedDeviceCallbacks(), true);
+    scan->setScanCallbacks(&g_scan_callbacks, true);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(99);
-    scan->start(10000, false);  // 10-second scan (NimBLE v2.x uses milliseconds)
+    bool started = scan->start(10000, false);   // non-blocking in v2.x
+    Serial.printf("[SCAN] start() returned %d — waiting for onScanEnd...\n", started);
+
+    if(started) {
+        xSemaphoreTake(g_scan_sem, pdMS_TO_TICKS(15000));   // block up to 15s
+    }
+
+    vSemaphoreDelete(g_scan_sem);
+    g_scan_sem = nullptr;
 
     Serial.printf("[SCAN] done. elapsed=%lums found=%u\n", millis() - t, scan_count);
     flipper_send("DONE");
