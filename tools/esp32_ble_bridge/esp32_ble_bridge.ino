@@ -10,10 +10,10 @@
  *   - Mayhem v2 ESP32-CAM ($95) — auto-connected, same pins as WROOM-32D
  *
  * Wiring (ESP32-WROOM-32D / generic DevKit):
- *   Flipper GPIO C1 (pin 15, TX) ──→ ESP32 pin labeled "25" (our RX)
- *   Flipper GPIO C0 (pin 16, RX) ──→ ESP32 pin labeled "26" (our TX)
- *   Flipper GND     (pin 18)     ──→ ESP32 GND
- *   Flipper 3.3V    (pin 9)      ──→ ESP32 3.3V (⚠ NOT 5V!)
+ *   Flipper GPIO TX (pin 13)  ──→ ESP32 pin labeled "25" (our RX)
+ *   Flipper GPIO RX (pin 14)  ──→ ESP32 pin labeled "26" (our TX)
+ *   Flipper GND     (pin 18)  ──→ ESP32 GND
+ *   Flipper 3.3V    (pin 9)   ──→ ESP32 3.3V (⚠ NOT 5V!)
  *
  *   ⚠ Do NOT use the pins labeled "TX" and "RX" near the USB connector —
  *   those are GPIO1/GPIO3 (the USB debug UART) and will not work.

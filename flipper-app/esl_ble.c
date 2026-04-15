@@ -24,7 +24,7 @@
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 #define ESL_UART_BAUD        115200
-#define ESL_UART_ID          FuriHalSerialIdLpuart   // GPIO C1=TX / C0=RX
+#define ESL_UART_ID          FuriHalSerialIdUsart   // GPIO TX (pin 13) / RX (pin 14) — the clearly-labeled pins
 #define ESL_RX_BUF_SIZE      256
 #define ESL_LINE_MAX         128
 #define ESL_STREAM_SIZE      512
